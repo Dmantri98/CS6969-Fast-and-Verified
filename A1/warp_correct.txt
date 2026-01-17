@@ -1,0 +1,1 @@
+Kernel 'right_shift_buffer' is DRF!
