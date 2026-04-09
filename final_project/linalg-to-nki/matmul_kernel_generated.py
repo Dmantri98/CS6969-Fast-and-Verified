@@ -40,11 +40,11 @@ def matmul_kernel_nki(A, B):
             res_psum = nl.ndarray((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)
 
             for k in nl.affine_range(K // TILE_K):
-                lhs_tile = nl.ndarray((TILE_M, TILE_K), dtype=A.dtype, buffer=nl.sbuf)
+                lhsT_tile = nl.ndarray((TILE_K, TILE_M), dtype=A.dtype, buffer=nl.sbuf)
                 nisa.dma_copy(
-                    dst=lhs_tile,
-                    src=A[m * TILE_M : (m + 1) * TILE_M,
-                          k * TILE_K : (k + 1) * TILE_K],
+                    dst=lhsT_tile,
+                    src=A[k * TILE_K : (k + 1) * TILE_K,
+                          m * TILE_M : (m + 1) * TILE_M],
                 )
 
                 rhs_tile = nl.ndarray((TILE_K, TILE_N), dtype=B.dtype, buffer=nl.sbuf)
@@ -56,7 +56,7 @@ def matmul_kernel_nki(A, B):
 
                 nisa.nc_matmul(
                     dst=res_psum,
-                    stationary=lhs_tile,
+                    stationary=lhsT_tile,
                     moving=rhs_tile,
                     tile_size=(64, 64),
                 )
