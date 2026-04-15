@@ -10,6 +10,7 @@ add_mlir_library(LinalgToNKITransforms
   FuseDma.cpp
   FuseStore.cpp
   FoldPsumInit.cpp
+  FuseActivation.cpp
   CanonicalizePidLoops.cpp
 
   DEPENDS
@@ -27,6 +28,7 @@ add_mlir_library(LinalgToNKITransforms
   MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRLinalgDialect
+  MLIRMathDialect
   MLIRMemRefDialect
   MLIRSCFDialect
   MLIRTensorDialect

@@ -61,9 +61,9 @@ src = tc.ASTSource(
         "stride_cm": "i32", "stride_cn": "i32"
     },
     constexprs={
-        "BLOCK_SIZE_M": 64, 
-        "BLOCK_SIZE_N": 64, 
-        "BLOCK_SIZE_K": 32
+        "BLOCK_SIZE_M": 256, 
+        "BLOCK_SIZE_N": 256, 
+        "BLOCK_SIZE_K": 256
     } 
 )
 

@@ -1,15 +1,19 @@
 //===----------------------------------------------------------------------===//
 // linalg-to-nki conversion pass.
 //
-// Pattern: fuse the linalg matmul/add accumulator pattern into nki.nc_matmul.
+// Pattern 1: fuse the linalg matmul/add accumulator pattern into nki.nc_matmul.
 //
 //   %init  = linalg.fill ins(%cst : f32) outs(%empty) -> tensor<MxNxf32>
 //   %temp  = linalg.matmul ins(%A, %B)   outs(%init)  -> tensor<MxNxf32>
 //   %nacc  = linalg.add    ins(%acc, %temp) outs(%acc) -> tensor<MxNxf32>
+//   =>  %nacc = nki.nc_matmul %A, %B, %acc
 //
-// becomes
+// Pattern 2: lower a standalone `linalg.add` (i.e. neither operand is a
+// `linalg.matmul` result -- the pointwise vector-add case) to
+// `nki.tensor_tensor "add"`.
 //
-//   %nacc  = nki.nc_matmul %A, %B, %acc : (...) -> tensor<MxNxf32>
+//   %r = linalg.add ins(%x, %y) outs(%x) -> tensor<NxT>
+//   =>  %r = nki.tensor_tensor "add" %x, %y : tensor<NxT>
 //===----------------------------------------------------------------------===//
 #include "Transforms/Passes.h"
 
@@ -132,6 +136,41 @@ struct MatmulAddToNcMatmul : public OpRewritePattern<linalg::AddOp> {
   }
 };
 
+/// Lower a standalone `linalg.add` (not the matmul accumulator pattern) into
+/// `nki.tensor_tensor "add"`. Only fires when neither input is produced by a
+/// `linalg.matmul` -- otherwise `MatmulAddToNcMatmul` takes precedence.
+struct StandaloneAddToTensorTensor : public OpRewritePattern<linalg::AddOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::AddOp addOp,
+                                PatternRewriter &rewriter) const override {
+    if (addOp.getNumResults() != 1)
+      return rewriter.notifyMatchFailure(addOp,
+                                         "expected tensor-semantic linalg.add");
+    if (addOp.getInputs().size() != 2)
+      return rewriter.notifyMatchFailure(addOp, "expected 2 inputs");
+
+    Value lhs = addOp.getInputs()[0];
+    Value rhs = addOp.getInputs()[1];
+
+    // Refuse to fire on the matmul+add accumulator pattern; that's
+    // MatmulAddToNcMatmul's job.
+    if (lhs.getDefiningOp<linalg::MatmulOp>() ||
+        rhs.getDefiningOp<linalg::MatmulOp>())
+      return rewriter.notifyMatchFailure(
+          addOp, "matmul accumulator pattern -- handled by MatmulAddToNcMatmul");
+
+    auto resTy = dyn_cast<RankedTensorType>(addOp.getResult(0).getType());
+    if (!resTy)
+      return rewriter.notifyMatchFailure(addOp, "non-ranked tensor result");
+
+    auto fused = TensorTensorOp::create(rewriter, addOp.getLoc(), resTy, lhs,
+                                        rhs, rewriter.getStringAttr("add"));
+    rewriter.replaceOp(addOp, fused.getResult());
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Pass driver
 //===----------------------------------------------------------------------===//
@@ -150,7 +189,12 @@ struct LinalgToNKIPass : public impl::LinalgToNKIBase<LinalgToNKIPass> {
 } // namespace
 
 void populateLinalgToNKIPatterns(RewritePatternSet &patterns) {
-  patterns.add<MatmulAddToNcMatmul>(patterns.getContext());
+  // MatmulAddToNcMatmul gets a higher benefit so it wins whenever the
+  // accumulator pattern is present; StandaloneAddToTensorTensor falls back for
+  // the pointwise vector-add case.
+  patterns.add<MatmulAddToNcMatmul>(patterns.getContext(), /*benefit=*/2);
+  patterns.add<StandaloneAddToTensorTensor>(patterns.getContext(),
+                                            /*benefit=*/1);
 }
 
 } // namespace nki

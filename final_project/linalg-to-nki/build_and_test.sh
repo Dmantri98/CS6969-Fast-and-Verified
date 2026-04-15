@@ -15,6 +15,7 @@
 #   ./build_and_test.sh                # configure (if needed), build, test
 #   ./build_and_test.sh --clean        # nuke build/ first
 #   ./build_and_test.sh --kernel       # also run pass on ../matmul_kernel.linalg
+#   ./build_and_test.sh --vec-add      # also run pass on ../add_kernel.linalg
 #   LLVM_BUILD_DIR=/path ./build_and_test.sh   # override llvm-project/build
 #===------------------------------------------------------------------------===
 set -euo pipefail
@@ -29,12 +30,14 @@ LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${FINAL_PROJECT_DIR}/llvm-project/build}"
 # --- Parse args -------------------------------------------------------------
 CLEAN=0
 RUN_KERNEL=0
+RUN_VEC_ADD=0
 for arg in "$@"; do
   case "$arg" in
-    --clean)  CLEAN=1 ;;
-    --kernel) RUN_KERNEL=1 ;;
+    --clean)   CLEAN=1 ;;
+    --kernel)  RUN_KERNEL=1 ;;
+    --vec-add) RUN_VEC_ADD=1 ;;
     -h|--help)
-      sed -n '2,21p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *)
@@ -174,6 +177,28 @@ else
   log "PASS: no residual reinterpret_cast / subview / extract_slice / materialize_in_destination"
 fi
 
+# --- Smoke test 5: run -linalg-to-nki on standalone vec_add ----------------
+VEC_ADD_TEST_FILE="${PROJECT_DIR}/test/vec_add.mlir"
+[[ -f "${VEC_ADD_TEST_FILE}" ]] || fail "test file missing: ${VEC_ADD_TEST_FILE}"
+
+log "running -linalg-to-nki on ${VEC_ADD_TEST_FILE##*/}"
+VEC_ADD_OUT="$("${OPT_BIN}" "${VEC_ADD_TEST_FILE}" -linalg-to-nki)"
+echo "----- vec-add pass output -----"
+echo "${VEC_ADD_OUT}"
+echo "-------------------------------"
+
+if echo "${VEC_ADD_OUT}" | grep -q 'nki.tensor_tensor "add"'; then
+  log "PASS: nki.tensor_tensor \"add\" present in output"
+else
+  fail "expected 'nki.tensor_tensor \"add\"' in pass output, but it is missing"
+fi
+
+if echo "${VEC_ADD_OUT}" | grep -qE 'linalg\.add'; then
+  fail "leftover linalg.add in output (standalone pattern did not fire)"
+else
+  log "PASS: no residual linalg.add"
+fi
+
 # --- Optional: run the pass on the real triton-shared kernel ---------------
 if [[ "${RUN_KERNEL}" -eq 1 ]]; then
   KERNEL_FILE="${FINAL_PROJECT_DIR}/matmul_kernel.linalg"
@@ -260,6 +285,74 @@ if [[ "${RUN_KERNEL}" -eq 1 ]]; then
     "return C" \
   ; do
     if grep -qF "${needle}" "${TMP_PY}"; then
+      log "PASS: emitted Python contains: ${needle}"
+    else
+      fail "emitted Python missing: ${needle}"
+    fi
+  done
+fi
+
+# --- Optional: run the full pipeline on the triton-shared vec-add kernel ---
+if [[ "${RUN_VEC_ADD}" -eq 1 ]]; then
+  VEC_ADD_KERNEL="${FINAL_PROJECT_DIR}/add_kernel.linalg"
+  [[ -f "${VEC_ADD_KERNEL}" ]] || fail "kernel file missing: ${VEC_ADD_KERNEL}"
+  log "running full pipeline on ${VEC_ADD_KERNEL}"
+  VEC_ADD_KERNEL_OUT="$("${OPT_BIN}" "${VEC_ADD_KERNEL}" \
+    -nki-canonicalize-pid-loops \
+    -linalg-to-nki \
+    -nki-fuse-dma \
+    -nki-fuse-store)"
+  echo "----- vec-add kernel pass output -----"
+  echo "${VEC_ADD_KERNEL_OUT}"
+  echo "--------------------------------------"
+  if echo "${VEC_ADD_KERNEL_OUT}" | grep -q 'nki.tensor_tensor "add"'; then
+    log "PASS: nki.tensor_tensor \"add\" appears in add_kernel.linalg lowering"
+  else
+    fail "no nki.tensor_tensor \"add\" in add_kernel.linalg lowering"
+  fi
+  DMA_COUNT="$(echo "${VEC_ADD_KERNEL_OUT}" | grep -c 'nki.dma_copy' || true)"
+  if [[ "${DMA_COUNT}" -ge 2 ]]; then
+    log "PASS: ${DMA_COUNT} nki.dma_copy ops in add_kernel.linalg lowering"
+  else
+    fail "expected >=2 nki.dma_copy ops, found ${DMA_COUNT}"
+  fi
+  if echo "${VEC_ADD_KERNEL_OUT}" | grep -q 'nki.dma_store'; then
+    log "PASS: nki.dma_store appears in add_kernel.linalg lowering"
+  else
+    fail "no nki.dma_store in add_kernel.linalg lowering"
+  fi
+  if echo "${VEC_ADD_KERNEL_OUT}" | grep -qE 'memref\.(reinterpret_cast|alloc|subview|copy)|bufferization\.(to_tensor|materialize_in_destination)|tensor\.extract_slice|linalg\.add'; then
+    fail "leftover memref / linalg.add chain in add_kernel.linalg lowering"
+  else
+    log "PASS: no residual memref / linalg.add chain in add_kernel.linalg lowering"
+  fi
+
+  # --- Translate to Python ---------------------------------------------------
+  log "translating lowered IR to NKI Python"
+  TMP_VEC_LOWERED="$(mktemp --tmpdir vec_lowered.XXXXXX.mlir)"
+  TMP_VEC_PY="$(mktemp --tmpdir vec_kernel.XXXXXX.py)"
+  trap 'rm -f "${TMP_VEC_LOWERED}" "${TMP_VEC_PY}"' EXIT
+  echo "${VEC_ADD_KERNEL_OUT}" > "${TMP_VEC_LOWERED}"
+  "${TRANSLATE_BIN}" "${TMP_VEC_LOWERED}" -o "${TMP_VEC_PY}"
+  echo "----- emitted vec-add Python -----"
+  cat "${TMP_VEC_PY}"
+  echo "----------------------------------"
+
+  for needle in \
+    "@nki.jit" \
+    "def add_kernel_nki(x, y, out):" \
+    "BLOCK_SIZE = 1024" \
+    "n_elements = x.shape[0]" \
+    "for block in nl.affine_range((n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE):" \
+    "i = nl.mgrid[0:BLOCK_SIZE]" \
+    "mask = block * BLOCK_SIZE + i < n_elements" \
+    "x_tile = nl.zeros((BLOCK_SIZE,), dtype=x.dtype, buffer=nl.sbuf)" \
+    "y_tile = nl.zeros((BLOCK_SIZE,), dtype=y.dtype, buffer=nl.sbuf)" \
+    "z_tile = nl.add(x_tile, y_tile)" \
+    "nl.store(out[block * BLOCK_SIZE + i], value=z_tile, mask=mask)" \
+    "return out" \
+  ; do
+    if grep -qF "${needle}" "${TMP_VEC_PY}"; then
       log "PASS: emitted Python contains: ${needle}"
     else
       fail "emitted Python missing: ${needle}"

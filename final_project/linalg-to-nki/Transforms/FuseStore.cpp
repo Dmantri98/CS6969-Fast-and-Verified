@@ -20,6 +20,7 @@
 
 #include "IR/NKIDialect.h"
 
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -79,17 +80,27 @@ struct StoreChainToNkiDmaStore
       return rewriter.notifyMatchFailure(
           matOp, "reinterpret_cast source is not an unranked memref");
 
-    // Extract the dynamic offset and dynamic strides from the
-    // reinterpret_cast. We require both to be dynamic operands.
-    if (reinterp.getOffsets().size() != 1)
+    // Extract the offset and per-dim strides from the reinterpret_cast, mixing
+    // static-attribute and dynamic-SSA-value forms (static strides appear in
+    // the 1-D vec-add kernel; all-dynamic strides appear in the 2-D matmul
+    // kernel). Materialize static entries to arith.constant index ops so the
+    // nki.dma_store operands are uniform SSA values.
+    SmallVector<OpFoldResult> mixedOffsets = reinterp.getMixedOffsets();
+    if (mixedOffsets.size() != 1)
       return rewriter.notifyMatchFailure(
-          matOp, "reinterpret_cast does not have exactly one dynamic offset");
-    Value offset = reinterp.getOffsets()[0];
+          matOp, "reinterpret_cast does not have exactly one offset");
+    Value offset = getValueOrCreateConstantIndexOp(rewriter, matOp.getLoc(),
+                                                   mixedOffsets[0]);
 
-    SmallVector<Value> strides(reinterp.getStrides());
-    if (strides.size() != static_cast<size_t>(tileTy.getRank()))
+    SmallVector<OpFoldResult> mixedStrides = reinterp.getMixedStrides();
+    if (mixedStrides.size() != static_cast<size_t>(tileTy.getRank()))
       return rewriter.notifyMatchFailure(
           matOp, "reinterpret_cast stride count does not match tile rank");
+    SmallVector<Value> strides;
+    strides.reserve(mixedStrides.size());
+    for (OpFoldResult ofr : mixedStrides)
+      strides.push_back(
+          getValueOrCreateConstantIndexOp(rewriter, matOp.getLoc(), ofr));
 
     // Build the fused store op (no result -- it's effectful).
     DmaStoreOp::create(rewriter, matOp.getLoc(), tile, dest, offset, strides);

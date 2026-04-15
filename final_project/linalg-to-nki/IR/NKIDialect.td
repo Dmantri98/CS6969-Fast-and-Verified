@@ -160,7 +160,8 @@ def NKI_DmaStoreOp : NKI_Op<"dma_store"> {
   let arguments = (ins AnyRankedTensor:$tile,
                        AnyUnrankedMemRef:$destination,
                        Index:$offset,
-                       Variadic<Index>:$strides);
+                       Variadic<Index>:$strides,
+                       DefaultValuedStrAttr<StrAttr, "none">:$activation);
 
   let assemblyFormat = [{
     $tile `into` $destination `[` $offset `]` `strides` `[` $strides `]`

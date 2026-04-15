@@ -138,6 +138,71 @@ def NKIFoldPsumInit : Pass<"nki-fold-psum-init", "::mlir::func::FuncOp"> {
   ];
 }
 
+def NKIFuseActivation : Pass<"nki-fuse-activation", "::mlir::func::FuncOp"> {
+  let summary = "Fold a pointwise activation op into the preceding nki.dma_store";
+  let description = [{
+    Folds an elementwise activation sitting between the matmul K-loop result
+    and the final `nki.dma_store` into the store's `activation` attribute.
+    The Python emitter then renders the fused store as
+    `nisa.activation(op=nl.<name>, data=psum, dtype=...)` in place of the
+    PSUM->SBUF `nisa.tensor_copy`.
+
+    Supported body shapes (see FuseActivation.cpp for the full registry):
+
+      unary math op (single-op body on a 1-input linalg.generic):
+        math.exp / log / sqrt / rsqrt / absf / tanh / erf / sin / cos / tan
+        -> exp / log / sqrt / rsqrt / abs / tanh / erf / sin / cos / tan
+
+      binary with a zero-filled sibling (2-input linalg.generic, one input is
+      linalg.fill ins(0.0) outs(tensor.empty)):
+        arith.maxnumf -> relu
+
+      structured op form (kept for future linalg specialization):
+        linalg.max ins(%acc, %zeros) -> relu
+
+    Rewrite:
+      <activation-linalg-op> %acc ...
+      nki.dma_store %<activation-result> into %C [...] strides [...]
+        ===>
+      nki.dma_store %acc into %C [...] strides [...] {activation = "<name>"}
+
+    Unrecognized / un-fused elementwise ops are surfaced by the companion
+    `-nki-check-unsupported-elementwise` pass with a readable diagnostic.
+  }];
+  let dependentDialects = [
+    "::mlir::nki::NKIDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::linalg::LinalgDialect",
+    "::mlir::math::MathDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def NKICheckUnsupportedElementwise
+    : Pass<"nki-check-unsupported-elementwise", "::mlir::func::FuncOp"> {
+  let summary = "Emit a readable diagnostic for elementwise ops the NKI "
+                "emitter cannot handle";
+  let description = [{
+    Runs after `-nki-fuse-activation` and walks the function for any surviving
+    `linalg.generic`, `linalg.max`, or other structured `linalg` op that the
+    Python emitter has no rule for. For each, emits `emitOpError()` plus a
+    note listing the supported activation set. Also distinguishes the
+    "recognized but not fused" case (e.g. the generic has multiple consumers
+    or the downstream op is not `nki.dma_store`) from the "truly unsupported"
+    case (e.g. a multi-op body, non-identity maps, a non-pointwise reduction).
+
+    Intended as the graceful-failure path: without this pass, an unsupported
+    body silently survives into `linalg-to-nki-translate`, which crashes in
+    a much less informative way.
+  }];
+  let dependentDialects = [
+    "::mlir::linalg::LinalgDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::math::MathDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def NKICanonicalizePidLoops : Pass<"nki-canonicalize-pid-loops",
                                    "::mlir::func::FuncOp"> {
   let summary = "Recover m/n tile loops from triton's program_id math";

@@ -34,6 +34,11 @@ void populateNKIFuseStorePatterns(RewritePatternSet &patterns);
 /// Populate patterns that fold linalg.fill PSUM seeds into nki.psum_alloc.
 void populateNKIFoldPsumInitPatterns(RewritePatternSet &patterns);
 
+/// Populate patterns that fold a pointwise activation (e.g. relu expressed as
+/// linalg.max against zeros) into the `activation` attribute of the
+/// downstream `nki.dma_store`.
+void populateNKIFuseActivationPatterns(RewritePatternSet &patterns);
+
 } // namespace nki
 } // namespace mlir
 

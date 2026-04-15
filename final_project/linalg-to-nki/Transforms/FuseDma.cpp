@@ -19,6 +19,7 @@
 
 #include "IR/NKIDialect.h"
 
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -113,19 +114,27 @@ struct DmaChainToNkiDmaCopy
       return rewriter.notifyMatchFailure(
           toTensor, "reinterpret_cast source is not an unranked memref");
 
-    // Extract the dynamic offset and dynamic strides from the
-    // reinterpret_cast. We require all of them to be dynamic operands (the
-    // shape we get from triton-shared) -- bail out if anything is encoded as
-    // a static attribute.
-    if (reinterp.getOffsets().size() != 1)
+    // Extract the offset and per-dim strides from the reinterpret_cast, mixing
+    // static-attribute and dynamic-SSA-value forms. The matmul kernel gives us
+    // all-dynamic operands; the vec-add kernel encodes a static stride of 1
+    // as an attribute. Materialize the static entries to arith.constant index
+    // ops so nki.dma_copy's Variadic<Index> operands see uniform SSA values.
+    SmallVector<OpFoldResult> mixedOffsets = reinterp.getMixedOffsets();
+    if (mixedOffsets.size() != 1)
       return rewriter.notifyMatchFailure(
-          toTensor, "reinterpret_cast does not have exactly one dynamic offset");
-    Value offset = reinterp.getOffsets()[0];
+          toTensor, "reinterpret_cast does not have exactly one offset");
+    Value offset = getValueOrCreateConstantIndexOp(rewriter, toTensor.getLoc(),
+                                                   mixedOffsets[0]);
 
-    SmallVector<Value> strides(reinterp.getStrides());
-    if (strides.size() != static_cast<size_t>(resTy.getRank()))
+    SmallVector<OpFoldResult> mixedStrides = reinterp.getMixedStrides();
+    if (mixedStrides.size() != static_cast<size_t>(resTy.getRank()))
       return rewriter.notifyMatchFailure(
           toTensor, "reinterpret_cast stride count does not match tile rank");
+    SmallVector<Value> strides;
+    strides.reserve(mixedStrides.size());
+    for (OpFoldResult ofr : mixedStrides)
+      strides.push_back(
+          getValueOrCreateConstantIndexOp(rewriter, toTensor.getLoc(), ofr));
 
     // Build the fused op.
     auto dma = DmaCopyOp::create(rewriter, toTensor.getLoc(), resTy, src,
