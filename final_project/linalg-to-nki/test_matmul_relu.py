@@ -50,7 +50,7 @@ def load_kernel(bm: int, bn: int, bk: int):
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
-    return mod.matmul_kernel_nki
+    return mod.matmul_relu_kernel_nki
 
 
 def run_one(kernel, M, K, N, tag, device):
