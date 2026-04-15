@@ -28,7 +28,7 @@ def add_kernel_nki(x, y, out):
     n_elements = x.shape[0]
 
     for block in nl.affine_range((n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE):
-        i = nl.mgrid[0:BLOCK_SIZE]
+        (i,) = nl.mgrid[0:BLOCK_SIZE]
         mask = block * BLOCK_SIZE + i < n_elements
 
         x_tile = nl.zeros((BLOCK_SIZE,), dtype=x.dtype, buffer=nl.sbuf)
