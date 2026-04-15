@@ -243,18 +243,20 @@ if [[ "${RUN_KERNEL}" -eq 1 ]]; then
 
   for needle in \
     "@nki.jit" \
-    "def matmul_kernel_nki(A, B):" \
+    "def matmul_kernel_nki(lhsT, rhs):" \
     "TILE_M = 64" \
     "TILE_N = 64" \
-    "TILE_K = 32" \
-    "C = nl.ndarray((M, N), dtype=A.dtype, buffer=nl.shared_hbm)" \
-    "for m in nl.affine_range(M // TILE_M):" \
-    "for n in nl.affine_range(N // TILE_N):" \
-    "for k in nl.affine_range(K // TILE_K):" \
-    "res_psum = nl.ndarray((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)" \
-    "nisa.dma_copy(" \
+    "TILE_K = 64" \
+    "C = nl.ndarray((M, N), dtype=lhsT.dtype, buffer=nl.shared_hbm)" \
+    "for m in nl.affine_range((M + TILE_M - 1) // TILE_M):" \
+    "for n in nl.affine_range((N + TILE_N - 1) // TILE_N):" \
+    "for k in nl.affine_range((K + TILE_K - 1) // TILE_K):" \
+    "res_psum_00 = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)" \
+    "lhsT_tile_0 = nl.zeros((TILE_K, TILE_M), dtype=lhsT.dtype, buffer=nl.sbuf)" \
+    "rhs_tile_0 = nl.zeros((TILE_K, TILE_N), dtype=rhs.dtype, buffer=nl.sbuf)" \
     "nisa.nc_matmul(" \
-    "nisa.tensor_copy(dst=res_sbuf, src=res_psum, dtype=A.dtype)" \
+    "res_sbuf_00 = nisa.tensor_copy(res_psum_00, dtype=lhsT.dtype)" \
+    "nl.store(" \
     "return C" \
   ; do
     if grep -qF "${needle}" "${TMP_PY}"; then
