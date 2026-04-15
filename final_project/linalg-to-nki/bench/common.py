@@ -44,7 +44,9 @@ class BenchResult:
 
 
 def _sync(device):
-    xm.wait_device_ops(device)
+    # wait_device_ops expects a Sequence[str] or nothing (all devices).
+    # Passing no args is safe and matches "flush everything queued so far".
+    xm.wait_device_ops()
 
 
 def time_kernel(kernel, args, device) -> tuple[float, float, float]:
