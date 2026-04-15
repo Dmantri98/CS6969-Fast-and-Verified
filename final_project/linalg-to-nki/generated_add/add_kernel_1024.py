@@ -24,20 +24,23 @@ import neuronxcc.nki.language as nl
 def add_kernel_nki(x, y, out):
     """Computes out = nl.add(x, y) over BLOCK_SIZE-sized strips."""
     BLOCK_SIZE = 1024
+    PAR = 128
+    FREE = 8
 
     n_elements = x.shape[0]
 
     for block in nl.affine_range((n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE):
-        (i,) = nl.mgrid[0:BLOCK_SIZE]
-        mask = block * BLOCK_SIZE + i < n_elements
+        i_p, i_f = nl.mgrid[0:PAR, 0:FREE]
+        lin = i_p * FREE + i_f
+        mask = block * BLOCK_SIZE + lin < n_elements
 
-        x_tile = nl.zeros((BLOCK_SIZE,), dtype=x.dtype, buffer=nl.sbuf)
-        x_tile[i] = nl.load(x[block * BLOCK_SIZE + i], mask=mask)
+        x_tile = nl.zeros((PAR, FREE), dtype=x.dtype, buffer=nl.sbuf)
+        x_tile[i_p, i_f] = nl.load(x[block * BLOCK_SIZE + lin], mask=mask)
 
-        y_tile = nl.zeros((BLOCK_SIZE,), dtype=y.dtype, buffer=nl.sbuf)
-        y_tile[i] = nl.load(y[block * BLOCK_SIZE + i], mask=mask)
+        y_tile = nl.zeros((PAR, FREE), dtype=y.dtype, buffer=nl.sbuf)
+        y_tile[i_p, i_f] = nl.load(y[block * BLOCK_SIZE + lin], mask=mask)
 
         z_tile = nl.add(x_tile, y_tile)
-        nl.store(out[block * BLOCK_SIZE + i], value=z_tile, mask=mask)
+        nl.store(out[block * BLOCK_SIZE + lin], value=z_tile, mask=mask)
 
     return out
