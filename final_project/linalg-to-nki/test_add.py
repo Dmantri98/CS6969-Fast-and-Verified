@@ -67,9 +67,8 @@ def load_kernel(block_size: int):
 def run_one(kernel, n, tag, device):
     x = torch.rand((n,), dtype=torch.float32, device=device)
     y = torch.rand((n,), dtype=torch.float32, device=device)
-    out = torch.zeros((n,), dtype=torch.float32, device=device)
 
-    nki_out = kernel(x, y, out)
+    nki_out = kernel(x, y)
     torch_out = x + y
 
     label = f"(n={n:>7d})  {tag}"
