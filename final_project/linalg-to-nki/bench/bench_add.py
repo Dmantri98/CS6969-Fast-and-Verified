@@ -22,21 +22,17 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-from common import compare, fmt_row, print_header  # noqa: E402
-from reference_kernels import ref_tensor_add       # noqa: E402
+from common import BenchRow, render, run_case                   # noqa: E402
+from reference_kernels import ref_tensor_add                    # noqa: E402
 
 
 GEN_DIR = ROOT / "generated_add"
 
-# Which generated BLOCK_SIZE to benchmark. 1024 tends to be the sweet spot
-# for our kernel (single BIG tile per step); pick a range to show the curve.
 CONFIGS = [512, 1024, 2048]
 
-# Shapes chosen so the reference (2D, 128x512-tiled) can run them. We pick
-# element counts that factor as rows*512 with rows % 128 == 0.
-# (elements, rows, cols, tag)
+# (elements, rows, cols, tag) -- rows % 128 == 0, cols == 512 so the ref fits.
 CASES = [
-    (128 * 512,       128,  512, "1 tile (smallest ref shape)"),
+    (128 * 512,       128,  512, "1 tile"),
     (256 * 512,       256,  512, "2 tiles"),
     (1024 * 512,     1024,  512, "medium"),
     (4096 * 512,     4096,  512, "large"),
@@ -57,7 +53,7 @@ def main():
     device = xm.xla_device()
     print(f"device = {device}\n")
 
-    print_header(["config/shape", "generated", "reference (nki-samples)"])
+    rows: list[BenchRow] = []
     for bs in CONFIGS:
         try:
             gen_kernel = load_gen_kernel(bs)
@@ -65,22 +61,33 @@ def main():
             print(f"SKIP BS={bs} (regenerate with generate_add_kernels.py)")
             continue
 
-        for (n_elements, rows, cols, tag) in CASES:
-            a2d = torch.rand((rows, cols), dtype=torch.float32, device=device)
-            b2d = torch.rand((rows, cols), dtype=torch.float32, device=device)
+        for (n_elements, nrows, ncols, tag) in CASES:
+            a2d = torch.rand((nrows, ncols), dtype=torch.float32, device=device)
+            b2d = torch.rand((nrows, ncols), dtype=torch.float32, device=device)
             a1d = a2d.reshape(-1).contiguous()
             b1d = b2d.reshape(-1).contiguous()
 
-            ref_out = (a2d + b2d)  # torch ground truth
+            gt2d = a2d + b2d  # torch ground truth, 2D
 
-            gen_res = compare(f"BS={bs}", gen_kernel, (a1d, b1d),
-                              ref_out.reshape(-1), device)
-            ref_res = compare(f"BS={bs}", ref_tensor_add, (a2d, b2d),
-                              ref_out, device)
+            # gen: (1D, 1D) -> 1D; wrap so the bench sees a 2D output for
+            # ground-truth comparison.
+            def gen_2d(a, b, _g=gen_kernel, _s=gt2d.shape):
+                return _g(a.reshape(-1), b.reshape(-1)).reshape(_s)
 
-            print(fmt_row(f"BS={bs}  n={n_elements}  ({tag})",
-                          gen_res, ref_res))
-        print()
+            rows.append(run_case(
+                bench="add",
+                config=f"BS={bs}",
+                shape=f"n={n_elements}",
+                case_tag=tag,
+                gen_kernel=gen_2d,
+                ref_kernel=ref_tensor_add,
+                args=(a2d, b2d),
+                ground_truth=gt2d,
+                atol=1e-5, rtol=1e-5,
+            ))
+            print(f"  ran BS={bs}  n={n_elements}  ({tag})")
+
+    render(rows, bench_name="add")
 
 
 if __name__ == "__main__":

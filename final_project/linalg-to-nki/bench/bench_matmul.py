@@ -1,11 +1,9 @@
 """
 Benchmark: auto-generated matmul kernels vs. the nki-samples tiled matmul
-reference.
+reference. Both take lhsT (K, M) and rhs (K, N) and return (M, N).
 
-Both kernels take lhsT (K, M) and rhs (K, N) and return (M, N). The
-nki-samples reference requires M%128 == 0, K%128 == 0, N%512 == 0, so we
-restrict the sweep to shapes that satisfy that (our generated kernels
-accept arbitrary shapes, but a fair comparison needs both to run).
+The nki-samples reference requires M%128 == 0, K%128 == 0, N%512 == 0,
+so the sweep is restricted to aligned shapes.
 
 Run:
     python bench/bench_matmul.py
@@ -21,8 +19,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-from common import compare, fmt_row, print_header  # noqa: E402
-from reference_kernels import ref_matmul_tiled     # noqa: E402
+from common import BenchRow, render, run_case               # noqa: E402
+from reference_kernels import ref_matmul_tiled              # noqa: E402
 
 
 GEN_DIR = ROOT / "generated"
@@ -34,13 +32,13 @@ CONFIGS = [
     (128, 128, 32),
 ]
 
-# (M, K, N, tag) -- all 128/128/512-aligned for the nki-samples reference.
+# (M, K, N, tag) -- all 128/128/512-aligned.
 CASES = [
-    (128,  128,  512,  "minimum tiled"),
+    (128,  128,  512,  "min tiled"),
     (256,  128,  512,  "M=2 tiles"),
     (128,  256,  512,  "K=2 tiles"),
     (128,  128, 1024,  "N=2 tiles"),
-    (512,  512, 1024,  "medium square-ish"),
+    (512,  512, 1024,  "medium"),
     (1024, 512, 2048,  "larger"),
 ]
 
@@ -59,7 +57,7 @@ def main():
     device = xm.xla_device()
     print(f"device = {device}\n")
 
-    print_header(["config/shape", "generated", "reference (nki-samples)"])
+    rows: list[BenchRow] = []
     for (bm, bn, bk) in CONFIGS:
         tag_cfg = f"{bm}x{bn}x{bk}"
         try:
@@ -73,16 +71,22 @@ def main():
             rhs = torch.rand((K, N), dtype=torch.float32, device=device) - 0.5
             lhsT = lhs.T.contiguous()
 
-            ref_out = torch.matmul(lhs, rhs)
+            gt = torch.matmul(lhs, rhs)
 
-            gen_res = compare(f"CFG={tag_cfg}", gen_kernel, (lhsT, rhs),
-                              ref_out, device)
-            ref_res = compare(f"CFG={tag_cfg}", ref_matmul_tiled, (lhsT, rhs),
-                              ref_out, device)
+            rows.append(run_case(
+                bench="matmul",
+                config=f"CFG={tag_cfg}",
+                shape=f"MKN={M}x{K}x{N}",
+                case_tag=case_tag,
+                gen_kernel=gen_kernel,
+                ref_kernel=ref_matmul_tiled,
+                args=(lhsT, rhs),
+                ground_truth=gt,
+                atol=1e-4, rtol=1e-2,
+            ))
+            print(f"  ran CFG={tag_cfg}  MKN={M}x{K}x{N}  ({case_tag})")
 
-            print(fmt_row(f"CFG={tag_cfg}  MKN={M}x{K}x{N}  ({case_tag})",
-                          gen_res, ref_res))
-        print()
+    render(rows, bench_name="matmul")
 
 
 if __name__ == "__main__":

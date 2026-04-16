@@ -3,9 +3,9 @@ Benchmark: auto-generated *fused* matmul+relu kernels vs. an unfused
 reference (nki-samples tiled matmul + standalone NKI relu).
 
 This is the benchmark that most directly measures the win from the
--nki-fuse-activation pass: the unfused reference writes the matmul
-result to HBM, reloads it into SBUF, applies relu, and writes it back.
-The generated fused kernel keeps the PSUM resident and emits one
+-nki-fuse-activation pass: the unfused reference writes the matmul result
+to HBM, reloads it into SBUF, applies relu, and writes it back. The
+generated fused kernel keeps the PSUM resident and emits one
 `nisa.activation(op=nl.relu, ...)` in place of the PSUM->SBUF
 tensor_copy, saving the full HBM roundtrip.
 
@@ -23,8 +23,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-from common import compare, fmt_row, print_header  # noqa: E402
-from reference_kernels import ref_matmul_relu_unfused  # noqa: E402
+from common import BenchRow, render, run_case                    # noqa: E402
+from reference_kernels import ref_matmul_relu_unfused            # noqa: E402
 
 
 GEN_DIR = ROOT / "generated_relu"
@@ -36,13 +36,12 @@ CONFIGS = [
     (128, 128, 32),
 ]
 
-# 128/128/512-aligned so the reference's nki-samples matmul can run.
 CASES = [
-    (128,  128,  512,  "minimum tiled"),
+    (128,  128,  512,  "min tiled"),
     (256,  128,  512,  "M=2 tiles"),
     (128,  256,  512,  "K=2 tiles"),
     (128,  128, 1024,  "N=2 tiles"),
-    (512,  512, 1024,  "medium square-ish"),
+    (512,  512, 1024,  "medium"),
     (1024, 512, 2048,  "larger"),
 ]
 
@@ -61,9 +60,7 @@ def main():
     device = xm.xla_device()
     print(f"device = {device}\n")
 
-    print_header(["config/shape",
-                  "generated (fused)",
-                  "reference (matmul + relu, unfused)"])
+    rows: list[BenchRow] = []
     for (bm, bn, bk) in CONFIGS:
         tag_cfg = f"{bm}x{bn}x{bk}"
         try:
@@ -78,16 +75,22 @@ def main():
             rhs = torch.rand((K, N), dtype=torch.float32, device=device) - 0.5
             lhsT = lhs.T.contiguous()
 
-            ref_out = torch.matmul(lhs, rhs).clamp_min(0.0)
+            gt = torch.matmul(lhs, rhs).clamp_min(0.0)
 
-            gen_res = compare(f"CFG={tag_cfg}", gen_kernel,
-                              (lhsT, rhs), ref_out, device)
-            ref_res = compare(f"CFG={tag_cfg}", ref_matmul_relu_unfused,
-                              (lhsT, rhs), ref_out, device)
+            rows.append(run_case(
+                bench="matmul_relu",
+                config=f"CFG={tag_cfg}",
+                shape=f"MKN={M}x{K}x{N}",
+                case_tag=case_tag,
+                gen_kernel=gen_kernel,
+                ref_kernel=ref_matmul_relu_unfused,
+                args=(lhsT, rhs),
+                ground_truth=gt,
+                atol=1e-4, rtol=1e-2,
+            ))
+            print(f"  ran CFG={tag_cfg}  MKN={M}x{K}x{N}  ({case_tag})")
 
-            print(fmt_row(f"CFG={tag_cfg}  MKN={M}x{K}x{N}  ({case_tag})",
-                          gen_res, ref_res))
-        print()
+    render(rows, bench_name="matmul_relu")
 
 
 if __name__ == "__main__":
