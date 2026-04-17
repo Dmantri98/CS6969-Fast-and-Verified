@@ -1,13 +1,15 @@
 """
-Test suite for auto-generated NKI matmul kernels across tile configs.
+Test suite for the auto-generated NKI matmul kernel.
 
-For each BLOCK_SIZE in CONFIGS, dynamic-imports the kernel file written by
-generate_kernels.py (generated/matmul_kernel_<BM>x<BN>x<BK>.py) and sweeps a
-table of (M, K, N) shapes, comparing against torch.matmul.
+Loads generated/matmul_kernel.py (produced by generate_kernels.py) and sweeps
+a table of (M, K, N) shapes, comparing against torch.matmul. The emitted
+kernel uses fixed TILE_M=128, TILE_N=512, TILE_K=128 and masks at every
+load/store, so both aligned and ragged shapes -- including shapes smaller
+than one tile -- must round-trip correctly.
 
 Run:
-    python generate_kernels.py        # once, to (re)build the kernels
-    python test_matmul.py             # run the shape sweep across configs
+    python generate_kernels.py        # once, to (re)build the kernel
+    python test_matmul.py             # run the shape sweep
 """
 import importlib.util
 import sys
@@ -19,50 +21,45 @@ from torch_xla.core import xla_model as xm
 
 HERE = Path(__file__).resolve().parent
 GEN_DIR = HERE / "generated"
+KERNEL_PATH = GEN_DIR / "matmul_kernel.py"
 
 
-# Keep in sync with CONFIGS in generate_kernels.py.
-CONFIGS = [
-    (64,  64,  64),
-    (128, 128, 128),
-    (64,  128, 64),
-    (128, 128, 32),
-]
-
-
+# (M, K, N, description). Each row exercises a different masking regime.
 CASES = [
-    # (M, K, N, tag)
-    (64,   64,   64,   "all multiples, single tile"),
-    (128,  128,  128,  "all multiples"),
-    (256,  128,  512,  "rectangular"),
-    (512,  256,  1024, "larger"),
+    # Aligned to tile boundaries.
+    (128,  128,  512,  "single tile, exact"),
+    (256,  128,  512,  "2 M-tiles"),
+    (128,  256,  512,  "2 K-tiles"),
+    (128,  128,  1024, "2 N-tiles"),
+    (512,  256,  1024, "multi-tile each axis"),
 
-    (100,  64,   128,  "partial M only"),
-    (128,  64,   100,  "partial N only"),
-    (128,  63,   128,  "partial K only (small)"),
-    (128,  100,  128,  "partial K only"),
+    # Ragged tails on one axis.
+    (100,  128,  512,  "partial M (< TILE_M)"),
+    (128,  128,  400,  "partial N (< TILE_N)"),
+    (128,  100,  512,  "partial K (< TILE_K)"),
 
+    # Ragged tails on every axis.
     (100,  63,   100,  "partial M, K, N (tiny)"),
     (200,  150,  300,  "partial M, K, N (small)"),
     (4090, 1020, 2040, "partial M, K, N (large; prior failing case)"),
 
+    # Degenerate.
     (1,    1,    1,    "degenerate 1x1x1"),
     (1,    64,   1,    "degenerate 1xKx1"),
-    (64,   1,    64,   "degenerate MxKx1"),
+    (64,   1,    64,   "degenerate Mx1xN"),
 ]
 
 
-def load_kernel(bm: int, bn: int, bk: int):
-    tag = f"{bm}x{bn}x{bk}"
-    path = GEN_DIR / f"matmul_kernel_{tag}.py"
-    if not path.exists():
+def load_kernel():
+    if not KERNEL_PATH.exists():
         raise FileNotFoundError(
-            f"{path} missing -- run `python generate_kernels.py` first"
+            f"{KERNEL_PATH} missing -- run `python generate_kernels.py` first"
         )
-    mod_name = f"generated_matmul_kernel_{tag}"
-    spec = importlib.util.spec_from_file_location(mod_name, path)
+    spec = importlib.util.spec_from_file_location(
+        "generated_matmul_kernel", KERNEL_PATH
+    )
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
+    sys.modules["generated_matmul_kernel"] = mod
     spec.loader.exec_module(mod)
     return mod.matmul_kernel_nki
 
@@ -76,46 +73,27 @@ def run_one(kernel, M, K, N, tag, device):
 
     label = f"({M:>5d} x {K:>5d} x {N:>5d})  {tag}"
     if torch.allclose(torch_out, nki_out, atol=1e-4, rtol=1e-2):
-        print(f"    PASS  {label}")
+        print(f"  PASS  {label}")
         return True
     max_abs = (torch_out - nki_out).abs().max().item()
     mean_abs = (torch_out - nki_out).abs().mean().item()
-    print(f"    FAIL  {label}   max|Δ|={max_abs:.4e}  mean|Δ|={mean_abs:.4e}")
+    print(f"  FAIL  {label}   max|Δ|={max_abs:.4e}  mean|Δ|={mean_abs:.4e}")
     return False
 
 
 def main():
     device = xm.xla_device()
+    print(f"=== NKI matmul_kernel on {device} ===")
+    kernel = load_kernel()
 
-    grand_pass = 0
-    grand_total = 0
-    failing_configs = []
+    passed = 0
+    for (M, K, N, case_tag) in CASES:
+        if run_one(kernel, M, K, N, case_tag, device):
+            passed += 1
 
-    for (bm, bn, bk) in CONFIGS:
-        tag = f"{bm}x{bn}x{bk}"
-        print(f"\n=== Kernel BLOCK_SIZE={tag} on {device} ===")
-        try:
-            kernel = load_kernel(bm, bn, bk)
-        except FileNotFoundError as e:
-            print(f"  SKIP: {e}")
-            failing_configs.append(tag)
-            continue
-
-        passed = 0
-        for (M, K, N, case_tag) in CASES:
-            if run_one(kernel, M, K, N, case_tag, device):
-                passed += 1
-        total = len(CASES)
-        grand_pass += passed
-        grand_total += total
-        print(f"  -> {passed}/{total} passed for BLOCK_SIZE={tag}")
-        if passed != total:
-            failing_configs.append(tag)
-
-    print()
-    print(f"OVERALL: {grand_pass} / {grand_total} passed")
-    if failing_configs:
-        print("Configs with failures or skips:", ", ".join(failing_configs))
+    total = len(CASES)
+    print(f"\nOVERALL: {passed} / {total} passed")
+    if passed != total:
         raise SystemExit(1)
 
 

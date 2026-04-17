@@ -95,11 +95,6 @@ private:
   // Pointwise state.
   int64_t blockSize = 0;
   StringRef pointwiseOp; // "add", "sub", ...
-  // PE-slot parallel unroll factors along the M (stationary-free) and N
-  // (moving-free) output axes. When the stationary tile is smaller than
-  // the 128×128 PE array, the free slots can each run an independent
-  // nc_matmul, so we unroll the outer (m, n) loops to dispatch them.
-  int64_t unrollM = 1, unrollN = 1;
 
   void writeIndent() {
     for (int i = 0; i < indent; ++i)
@@ -171,30 +166,14 @@ private:
       func.emitError() << "nc_matmul has non-static tile dimensions";
       return failure();
     }
-    // Snap each IR tile to a valid NC-v2 PE-array slot (64 or 128).
-    // The IR tile is a lower bound on how much contiguous data we want to
-    // push through the PE array per iteration; we always round up to the
-    // nearest valid slot and mask/pad out-of-bounds elements at load/store.
-    auto snap = [](int64_t dim) -> int64_t {
-      return dim >= 128 ? 128 : 64;
-    };
-    tileM = snap(tileM);
-    tileN = snap(tileN);
-    tileK = snap(tileK);
-    // PE-slot unroll. A 64-slot along the K (partition) axis leaves a
-    // second K-slot free -- we claim it by unrolling the N output axis.
-    // A 64-slot along the M (stationary-free) axis leaves a second M-slot
-    // free -- we claim it by unrolling the M output axis. Both small =>
-    // 4-way parallel matmuls per inner-k step.
-    //
-    // TEMPORARILY DISABLED while diagnosing a neuronx-cc SB_Allocator
-    // assertion (`ml_base == 0`) that fires with the 4-way fan-out. Set
-    // back to the dynamic rule below once the underlying layout issue
-    // is understood.
-    //   unrollM = (tileM < 128) ? 2 : 1;
-    //   unrollN = (tileK < 128) ? 2 : 1;
-    unrollM = 1;
-    unrollN = 1;
+    // NC-v2 PE-array geometry: stationary is 128x128 (M x K caps), moving
+    // free axis goes up to 512. The IR tile is only a hint -- the emitted
+    // kernel masks OOB at load/store -- so we always run at full PE
+    // utilization regardless of the upstream BLOCK_SIZE. Anything smaller
+    // (e.g. TILE_N=128) under-amortizes the stationary load by 4x.
+    tileM = 128;
+    tileK = 128;
+    tileN = 512;
     return success();
   }
 
@@ -209,7 +188,7 @@ private:
     os << "  func.func @kernel(...)               -> @nki.jit def "
        << func.getName() << "_nki(lhsT, rhs)\n";
     os << "  arith.constant " << tileM << "/" << tileN << "/" << tileK
-       << "                 -> TILE_M/N/K constants (snapped to 64/128)\n";
+       << "               -> TILE_M/N/K constants (NC-v2 default 128/512/128)\n";
     os << "  scf.for over pid_m / pid_n           -> ceil-div "
           "nl.affine_range(...)\n";
     os << "  nki.psum_alloc                       -> nl.ndarray(buffer=nl.psum)"
@@ -225,10 +204,7 @@ private:
           "nl.store(C[...], mask=...)\n";
     os << "\n";
     os << "Tile sizes:  TILE_M=" << tileM << "  TILE_N=" << tileN
-       << "  TILE_K=" << tileK << "\n";
-    os << "PE-slot unroll: M x N = " << unrollM << " x " << unrollN
-       << " => " << (unrollM * unrollN)
-       << " concurrent nc_matmul per inner k step\n";
+       << "  TILE_K=" << tileK << "  (full 128x128 PE array, N=512)\n";
     os << "\"\"\"\n";
     os << "import neuronxcc.nki as nki\n";
     os << "import neuronxcc.nki.isa as nisa\n";
@@ -375,27 +351,9 @@ private:
     return success();
   }
 
-  // Emit an M-strip coefficient "(UM * m + mm)" or "m" if unrollM == 1.
-  std::string mCoef(int64_t mm) {
-    if (unrollM == 1)
-      return "m";
-    return "(" + std::to_string(unrollM) + " * m + " + std::to_string(mm) + ")";
-  }
-  std::string nCoef(int64_t nn) {
-    if (unrollN == 1)
-      return "n";
-    return "(" + std::to_string(unrollN) + " * n + " + std::to_string(nn) + ")";
-  }
-
   LogicalResult emitMLoop(scf::ForOp outer) {
     writeIndent();
-    if (unrollM == 1) {
-      os << "for m in nl.affine_range((M + TILE_M - 1) // TILE_M):\n";
-    } else {
-      os << "for m in nl.affine_range("
-            "(M + " << unrollM << " * TILE_M - 1) // ("
-         << unrollM << " * TILE_M)):\n";
-    }
+    os << "for m in nl.affine_range((M + TILE_M - 1) // TILE_M):\n";
     indent++;
 
     scf::ForOp inner;
@@ -418,25 +376,12 @@ private:
 
   LogicalResult emitNLoop(scf::ForOp inner) {
     writeIndent();
-    if (unrollN == 1) {
-      os << "for n in nl.affine_range((N + TILE_N - 1) // TILE_N):\n";
-    } else {
-      os << "for n in nl.affine_range("
-            "(N + " << unrollN << " * TILE_N - 1) // ("
-         << unrollN << " * TILE_N)):\n";
-    }
+    os << "for n in nl.affine_range((N + TILE_N - 1) // TILE_N):\n";
     indent++;
 
-    // One PSUM accumulator per parallel PE slot.
-    for (int64_t mm = 0; mm < unrollM; ++mm) {
-      for (int64_t nn = 0; nn < unrollN; ++nn) {
-        writeIndent();
-        os << "res_psum_" << mm << nn
-           << " = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, "
-              "buffer=nl.psum)\n";
-      }
-    }
-    os << "\n";
+    writeIndent();
+    os << "res_psum = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, "
+          "buffer=nl.psum)\n\n";
 
     scf::ForOp kLoop;
     DmaStoreOp store;
@@ -481,87 +426,61 @@ private:
       return failure();
     }
 
-    // A tile loads. lhsT is already transposed (K, M). We zero-init an
-    // SBUF tile then do a masked indexed assignment from an nl.load --
-    // OOB lanes stay at 0, which is critical for the K-boundary tile
-    // because nc_matmul would otherwise sum garbage into the PSUM and
-    // corrupt every output element of this (m, n) tile.
+    // A tile load. lhsT is already transposed (K, M). We zero-init an
+    // SBUF tile then do a masked indexed assignment from nl.load -- OOB
+    // lanes stay at 0, which is critical for the K-boundary tile because
+    // nc_matmul would otherwise sum garbage into the PSUM and corrupt
+    // every output element of this (m, n) tile.
     writeIndent();
     os << "i_k, i_m = nl.mgrid[0:TILE_K, 0:TILE_M]\n";
-    for (int64_t mm = 0; mm < unrollM; ++mm) {
-      std::string mc = mCoef(mm);
-      writeIndent();
-      os << "mask_lhsT_" << mm
-         << " = (k * TILE_K + i_k < K) & (" << mc << " * TILE_M + i_m < M)\n";
-      writeIndent();
-      os << "lhsT_tile_" << mm
-         << " = nl.zeros((TILE_K, TILE_M), dtype=lhsT.dtype, "
-            "buffer=nl.sbuf)\n";
-      writeIndent();
-      os << "lhsT_tile_" << mm << "[i_k, i_m] = nl.load(\n";
-      indent++;
-      writeIndent();
-      os << "lhsT[k * TILE_K + i_k, " << mc << " * TILE_M + i_m],\n";
-      writeIndent();
-      os << "mask=mask_lhsT_" << mm << ",\n";
-      indent--;
-      writeIndent();
-      os << ")\n";
-    }
-    os << "\n";
+    writeIndent();
+    os << "mask_lhsT = (k * TILE_K + i_k < K) & (m * TILE_M + i_m < M)\n";
+    writeIndent();
+    os << "lhsT_tile = nl.zeros((TILE_K, TILE_M), dtype=lhsT.dtype, "
+          "buffer=nl.sbuf)\n";
+    writeIndent();
+    os << "lhsT_tile[i_k, i_m] = nl.load(\n";
+    indent++;
+    writeIndent();
+    os << "lhsT[k * TILE_K + i_k, m * TILE_M + i_m],\n";
+    writeIndent();
+    os << "mask=mask_lhsT,\n";
+    indent--;
+    writeIndent();
+    os << ")\n\n";
 
-    // B tile loads. rhs is (K, N); same zero-init + mask pattern.
+    // B tile load. rhs is (K, N); same zero-init + mask pattern.
     writeIndent();
     os << "i_k, i_n = nl.mgrid[0:TILE_K, 0:TILE_N]\n";
-    for (int64_t nn = 0; nn < unrollN; ++nn) {
-      std::string nc = nCoef(nn);
-      writeIndent();
-      os << "mask_rhs_" << nn
-         << " = (k * TILE_K + i_k < K) & (" << nc << " * TILE_N + i_n < N)\n";
-      writeIndent();
-      os << "rhs_tile_" << nn
-         << " = nl.zeros((TILE_K, TILE_N), dtype=rhs.dtype, "
-            "buffer=nl.sbuf)\n";
-      writeIndent();
-      os << "rhs_tile_" << nn << "[i_k, i_n] = nl.load(\n";
-      indent++;
-      writeIndent();
-      os << "rhs[k * TILE_K + i_k, " << nc << " * TILE_N + i_n],\n";
-      writeIndent();
-      os << "mask=mask_rhs_" << nn << ",\n";
-      indent--;
-      writeIndent();
-      os << ")\n";
-    }
-    os << "\n";
+    writeIndent();
+    os << "mask_rhs = (k * TILE_K + i_k < K) & (n * TILE_N + i_n < N)\n";
+    writeIndent();
+    os << "rhs_tile = nl.zeros((TILE_K, TILE_N), dtype=rhs.dtype, "
+          "buffer=nl.sbuf)\n";
+    writeIndent();
+    os << "rhs_tile[i_k, i_n] = nl.load(\n";
+    indent++;
+    writeIndent();
+    os << "rhs[k * TILE_K + i_k, n * TILE_N + i_n],\n";
+    writeIndent();
+    os << "mask=mask_rhs,\n";
+    indent--;
+    writeIndent();
+    os << ")\n\n";
 
-    // nc_matmul dispatch. stationary=lhsT_tile_mm because lhsT^T == A.
-    // Each (mm, nn) output strip gets its own PE slot at tile position
-    // (mm*TILE_K, nn*TILE_M). When the stationary tile already fills
-    // the full 128×128 PE array (both unrolls == 1), neuronx-cc doesn't
-    // want tile_size/tile_position at all.
-    bool useTiling = (tileK < 128) || (tileM < 128);
-    for (int64_t mm = 0; mm < unrollM; ++mm) {
-      for (int64_t nn = 0; nn < unrollN; ++nn) {
-        writeIndent();
-        os << "res_psum_" << mm << nn << "[...] += nisa.nc_matmul(\n";
-        indent++;
-        writeIndent();
-        os << "stationary=lhsT_tile_" << mm << ",\n";
-        writeIndent();
-        os << "moving=rhs_tile_" << nn << ",\n";
-        if (useTiling) {
-          writeIndent();
-          os << "tile_position=(" << (mm * tileK) << ", " << (nn * tileM)
-             << "),\n";
-          writeIndent();
-          os << "tile_size=(" << tileK << ", " << tileM << "),\n";
-        }
-        indent--;
-        writeIndent();
-        os << ")\n";
-      }
-    }
+    // nc_matmul dispatch. stationary=lhsT_tile because lhsT^T == A. Since
+    // the stationary tile fills the full 128x128 PE array, neuronx-cc
+    // does not want tile_size/tile_position.
+    writeIndent();
+    os << "res_psum[...] += nisa.nc_matmul(\n";
+    indent++;
+    writeIndent();
+    os << "stationary=lhsT_tile,\n";
+    writeIndent();
+    os << "moving=rhs_tile,\n";
+    indent--;
+    writeIndent();
+    os << ")\n";
 
     indent--;
     return success();
@@ -576,36 +495,25 @@ private:
     bool hasActivation = activation != "none";
     writeIndent();
     os << "i_m, i_n = nl.mgrid[0:TILE_M, 0:TILE_N]\n";
-    for (int64_t mm = 0; mm < unrollM; ++mm) {
-      for (int64_t nn = 0; nn < unrollN; ++nn) {
-        std::string mc = mCoef(mm);
-        std::string nc = nCoef(nn);
-        writeIndent();
-        if (hasActivation) {
-          os << "res_sbuf_" << mm << nn
-             << " = nisa.activation(op=nl." << activation
-             << ", data=res_psum_" << mm << nn
-             << ", dtype=lhsT.dtype)\n";
-        } else {
-          os << "res_sbuf_" << mm << nn
-             << " = nisa.tensor_copy(res_psum_" << mm << nn
-             << ", dtype=lhsT.dtype)\n";
-        }
-        writeIndent();
-        os << "nl.store(\n";
-        indent++;
-        writeIndent();
-        os << "C[" << mc << " * TILE_M + i_m, " << nc << " * TILE_N + i_n],\n";
-        writeIndent();
-        os << "value=res_sbuf_" << mm << nn << ",\n";
-        writeIndent();
-        os << "mask=(" << mc << " * TILE_M + i_m < M) & (" << nc
-           << " * TILE_N + i_n < N),\n";
-        indent--;
-        writeIndent();
-        os << ")\n";
-      }
+    writeIndent();
+    if (hasActivation) {
+      os << "res_sbuf = nisa.activation(op=nl." << activation
+         << ", data=res_psum, dtype=lhsT.dtype)\n";
+    } else {
+      os << "res_sbuf = nisa.tensor_copy(res_psum, dtype=lhsT.dtype)\n";
     }
+    writeIndent();
+    os << "nl.store(\n";
+    indent++;
+    writeIndent();
+    os << "C[m * TILE_M + i_m, n * TILE_N + i_n],\n";
+    writeIndent();
+    os << "value=res_sbuf,\n";
+    writeIndent();
+    os << "mask=(m * TILE_M + i_m < M) & (n * TILE_N + i_n < N),\n";
+    indent--;
+    writeIndent();
+    os << ")\n";
   }
 };
 

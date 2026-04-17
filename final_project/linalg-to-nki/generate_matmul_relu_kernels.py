@@ -1,13 +1,15 @@
 """
 End-to-end pipeline driver: Triton matmul+relu kernel -> NKI Python kernel.
 
-For each (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K) tuple in CONFIGS:
-  1. Compile the Triton matmul-relu kernel with those constexprs -> TTIR
+  1. Compile the Triton matmul-relu kernel -> TTIR
   2. Lower TTIR -> specialized linalg via triton-shared-opt
   3. Apply the MLIR pass pipeline via linalg-to-nki-opt
      (includes -nki-fuse-activation to fold relu into the store)
   4. Emit NKI Python via linalg-to-nki-translate
-  5. Write to generated_relu/matmul_relu_kernel_<BM>x<BN>x<BK>.py
+  5. Write to generated_relu/matmul_relu_kernel.py
+
+The emitter hardcodes TILE_M=128, TILE_N=512, TILE_K=128 regardless of the
+upstream BLOCK_SIZE, so a single canonical Triton compile is all we need.
 
 Run (from linalg-to-nki/):
     conda activate triton
@@ -16,7 +18,6 @@ Run (from linalg-to-nki/):
 """
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import triton
@@ -35,13 +36,7 @@ OPT_BIN = HERE / "build/bin/linalg-to-nki-opt"
 TRANSLATE_BIN = HERE / "build/bin/linalg-to-nki-translate"
 OUT_DIR = HERE / "generated_relu"
 
-
-CONFIGS = [
-    (64,  64,  64),
-    (128, 128, 128),
-    (64,  128, 64),
-    (128, 128, 32),
-]
+BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 128
 
 
 @triton.jit
@@ -86,7 +81,7 @@ def matmul_relu_kernel(
     tl.store(c_ptrs, accumulator, mask=mask_m[:, None] & mask_n[None, :])
 
 
-def compile_ttir(bm: int, bn: int, bk: int) -> str:
+def compile_ttir() -> str:
     src = tc.ASTSource(
         fn=matmul_relu_kernel,
         signature={
@@ -97,9 +92,9 @@ def compile_ttir(bm: int, bn: int, bk: int) -> str:
             "stride_cm": "i32", "stride_cn": "i32",
         },
         constexprs={
-            "BLOCK_SIZE_M": bm,
-            "BLOCK_SIZE_N": bn,
-            "BLOCK_SIZE_K": bk,
+            "BLOCK_SIZE_M": BLOCK_M,
+            "BLOCK_SIZE_N": BLOCK_N,
+            "BLOCK_SIZE_K": BLOCK_K,
         },
     )
     try:
@@ -120,15 +115,15 @@ def run(cmd):
     return res.stdout
 
 
-def pipeline(bm: int, bn: int, bk: int, out_py: Path) -> None:
-    print(f"  [1/4] triton -> TTIR (BLOCK_SIZE = {bm}, {bn}, {bk})")
-    ttir = compile_ttir(bm, bn, bk)
+def pipeline(out_py: Path) -> None:
+    print(f"  [1/4] triton -> TTIR (BLOCK_SIZE = {BLOCK_M}, {BLOCK_N}, {BLOCK_K})")
+    ttir = compile_ttir()
 
     # Persist intermediates alongside the emitted Python so we can inspect
     # where fusion did or didn't fire.
-    tag = out_py.stem  # matmul_relu_kernel_<BM>x<BN>x<BK>
     art_dir = out_py.parent / "_ir"
     art_dir.mkdir(parents=True, exist_ok=True)
+    tag = out_py.stem
     ttir_path = art_dir / f"{tag}.ttir"
     linalg_path = art_dir / f"{tag}.linalg"
     lowered_path = art_dir / f"{tag}.lowered.mlir"
@@ -167,14 +162,10 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "__init__.py").touch()
 
-    for bm, bn, bk in CONFIGS:
-        tag = f"{bm}x{bn}x{bk}"
-        out_py = OUT_DIR / f"matmul_relu_kernel_{tag}.py"
-        print(f"\n=== Generating kernel for BLOCK_SIZE = {tag} ===")
-        pipeline(bm, bn, bk, out_py)
-        print(f"  OK: {out_py}")
-
-    print("\nAll kernels generated under", OUT_DIR)
+    out_py = OUT_DIR / "matmul_relu_kernel.py"
+    print(f"\n=== Generating NKI matmul+relu kernel ===")
+    pipeline(out_py)
+    print(f"  OK: {out_py}")
 
 
 if __name__ == "__main__":
