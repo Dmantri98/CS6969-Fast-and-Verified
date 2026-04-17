@@ -1,0 +1,417 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 2200" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f0f1a"/>
+      <stop offset="100%" stop-color="#1a1a2e"/>
+    </linearGradient>
+    <!-- Pass box gradients -->
+    <linearGradient id="pass1Grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="pass2Grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+    <linearGradient id="pass3Grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="pass4Grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ec4899"/>
+      <stop offset="100%" stop-color="#f472b6"/>
+    </linearGradient>
+    <linearGradient id="pass5Grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="inputGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="outputGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#065f46"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#64748b"/>
+    </linearGradient>
+    <!-- Glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softShadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+    <!-- Arrow marker -->
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowheadGreen" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1400" height="2200" fill="url(#bgGrad)"/>
+
+  <!-- Title -->
+  <text x="700" y="55" text-anchor="middle" fill="#f1f5f9" font-size="28" font-weight="700" letter-spacing="1">
+    Triton → NKI Compilation Pipeline
+  </text>
+  <text x="700" y="82" text-anchor="middle" fill="#94a3b8" font-size="14">
+    matmul_kernel_64.linalg (191 lines) → matmul_kernel.lowered.mlir (55 lines)
+  </text>
+
+  <!-- ================================================================== -->
+  <!-- INPUT BOX -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="100" y="110" width="1200" height="260" rx="12" fill="url(#inputGrad)" stroke="#475569" stroke-width="1.5"/>
+  </g>
+  <text x="700" y="142" text-anchor="middle" fill="#e2e8f0" font-size="18" font-weight="600">
+    INPUT: matmul_kernel_64.linalg (Standard Linalg / MemRef MLIR)
+  </text>
+  <line x1="130" y1="155" x2="1270" y2="155" stroke="#475569" stroke-width="0.5"/>
+
+  <!-- Input sections - color coded to match which pass handles them -->
+  <!-- Section: Constants -->
+  <rect x="130" y="170" width="200" height="50" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
+  <text x="230" y="192" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Constants</text>
+  <text x="230" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">c64, c32, cst=0.0</text>
+
+  <!-- Section: Acc Init (cyan - Pass 5) -->
+  <rect x="340" y="170" width="220" height="50" rx="6" fill="#083344" stroke="#06b6d4" stroke-width="1.5"/>
+  <text x="450" y="192" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="600">Accumulator Init</text>
+  <text x="450" y="208" text-anchor="middle" fill="#67e8f9" font-size="10">tensor.empty + linalg.fill(0)</text>
+
+  <!-- Section: PID math (purple - Pass 1) -->
+  <rect x="570" y="170" width="260" height="50" rx="6" fill="#1e1b4b" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="700" y="192" text-anchor="middle" fill="#a5b4fc" font-size="11" font-weight="600">Program ID Math</text>
+  <text x="700" y="208" text-anchor="middle" fill="#c4b5fd" font-size="10">divsi / remsi / muli on %arg15</text>
+
+  <!-- Section: K-loop -->
+  <rect x="840" y="170" width="130" height="50" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
+  <text x="905" y="192" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">K-Loop</text>
+  <text x="905" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">scf.for k=0..K/32</text>
+
+  <!-- Section: Offset arith -->
+  <rect x="980" y="170" width="180" height="50" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
+  <text x="1070" y="192" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Offset Arithmetic</text>
+  <text x="1070" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">index_cast, muli, addi</text>
+
+  <!-- Row 2: Inside K-loop -->
+  <!-- A tile load chain (green - Pass 3) -->
+  <rect x="130" y="235" width="360" height="55" rx="6" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
+  <text x="310" y="255" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">A Tile Load Chain (6 ops)</text>
+  <text x="310" y="270" text-anchor="middle" fill="#a7f3d0" font-size="9">reinterpret_cast → alloc → subview×2 → copy → to_tensor</text>
+  <text x="310" y="283" text-anchor="middle" fill="#6ee7b7" font-size="9" font-style="italic">Lines 83–115</text>
+
+  <!-- B tile load chain (green - Pass 3) -->
+  <rect x="500" y="235" width="360" height="55" rx="6" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
+  <text x="680" y="255" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">B Tile Load Chain (6 ops)</text>
+  <text x="680" y="270" text-anchor="middle" fill="#a7f3d0" font-size="9">reinterpret_cast → alloc → subview×2 → copy → to_tensor</text>
+  <text x="680" y="283" text-anchor="middle" fill="#6ee7b7" font-size="9" font-style="italic">Lines 96–134</text>
+
+  <!-- Matmul+Add (orange - Pass 2) -->
+  <rect x="870" y="235" width="290" height="55" rx="6" fill="#431407" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="1015" y="255" text-anchor="middle" fill="#fcd34d" font-size="11" font-weight="600">Matmul + Accumulate (4 ops)</text>
+  <text x="1015" y="270" text-anchor="middle" fill="#fde68a" font-size="9">empty → fill(0) → matmul → add</text>
+  <text x="1015" y="283" text-anchor="middle" fill="#fcd34d" font-size="9" font-style="italic">Lines 137–140</text>
+
+  <!-- Store chain (pink - Pass 4) -->
+  <rect x="130" y="305" width="1030" height="50" rx="6" fill="#500724" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="645" y="325" text-anchor="middle" fill="#f9a8d4" font-size="11" font-weight="600">Store Result Chain (~24 lines)</text>
+  <text x="645" y="340" text-anchor="middle" fill="#fbcfe8" font-size="9">reinterpret_cast C → 20 lines bounds math → extract_slice → subview → materialize_in_destination  (Lines 150–186)</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW: Input → Pass 1 -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="375" x2="700" y2="410" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- ================================================================== -->
+  <!-- PASS 1: Canonicalize PID Loops -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="200" y="415" width="1000" height="160" rx="12" fill="#0f0f1a" stroke="url(#pass1Grad)" stroke-width="2"/>
+  </g>
+  <!-- Pass number badge -->
+  <circle cx="230" cy="442" r="16" fill="url(#pass1Grad)" filter="url(#glow)"/>
+  <text x="230" y="447" text-anchor="middle" fill="white" font-size="14" font-weight="700">1</text>
+  <text x="260" y="447" fill="#a5b4fc" font-size="16" font-weight="600">canonicalize-pid-loops</text>
+  <text x="950" y="447" text-anchor="end" fill="#64748b" font-size="12" font-style="italic">CanonicalizePidLoops.cpp</text>
+
+  <line x1="220" y1="458" x2="1180" y2="458" stroke="#2d2d5e" stroke-width="0.5"/>
+
+  <!-- Before -->
+  <rect x="230" y="470" width="350" height="90" rx="8" fill="#1e1b4b" stroke="#4338ca" stroke-width="1"/>
+  <text x="405" y="488" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">CONSUMED</text>
+  <text x="250" y="506" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%3 = arith.divsi %arg15, %num_n</text>
+  <text x="250" y="522" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%4 = arith.remsi %arg15, %num_n</text>
+  <text x="250" y="538" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%5 = arith.muli %3, %c64</text>
+  <text x="250" y="554" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%6 = arith.muli %4, %c64</text>
+
+  <!-- Arrow -->
+  <text x="620" y="520" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
+
+  <!-- After -->
+  <rect x="660" y="470" width="500" height="90" rx="8" fill="#1a0f38" stroke="#7c3aed" stroke-width="1"/>
+  <text x="910" y="488" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">PRODUCED</text>
+  <text x="680" y="506" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">scf.for %m = 0 to ceil(M/64) {</text>
+  <text x="680" y="522" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">  scf.for %n = 0 to ceil(N/64) {</text>
+  <text x="680" y="538" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">    %rm = muli %m, 64  // replaces divsi</text>
+  <text x="680" y="554" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">    %rn = muli %n, 64  // replaces remsi</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="580" x2="700" y2="615" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- ================================================================== -->
+  <!-- PASS 2: Linalg to NKI -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="200" y="620" width="1000" height="160" rx="12" fill="#0f0f1a" stroke="url(#pass2Grad)" stroke-width="2"/>
+  </g>
+  <circle cx="230" cy="647" r="16" fill="url(#pass2Grad)" filter="url(#glow)"/>
+  <text x="230" y="652" text-anchor="middle" fill="white" font-size="14" font-weight="700">2</text>
+  <text x="260" y="652" fill="#fcd34d" font-size="16" font-weight="600">linalg-to-nki</text>
+  <text x="950" y="652" text-anchor="end" fill="#64748b" font-size="12" font-style="italic">LinalgToNKI.cpp</text>
+
+  <line x1="220" y1="663" x2="1180" y2="663" stroke="#3d2e0a" stroke-width="0.5"/>
+
+  <rect x="230" y="675" width="380" height="90" rx="8" fill="#451a03" stroke="#b45309" stroke-width="1"/>
+  <text x="420" y="693" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="600">CONSUMED (4 ops)</text>
+  <text x="250" y="711" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%61 = tensor.empty()</text>
+  <text x="250" y="727" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%62 = linalg.fill(0.0, %61)</text>
+  <text x="250" y="743" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%63 = linalg.matmul(%A, %B, %62)</text>
+  <text x="250" y="759" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%64 = linalg.add(%acc, %63)</text>
+
+  <text x="645" y="730" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
+
+  <rect x="680" y="675" width="480" height="90" rx="8" fill="#3d1f00" stroke="#d97706" stroke-width="1"/>
+  <text x="920" y="693" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="600">PRODUCED (1 op)</text>
+  <text x="700" y="725" fill="#fbbf24" font-size="13" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%34 = nki.nc_matmul %A, %B, %acc</text>
+  <text x="700" y="748" fill="#a3842a" font-size="10">result = acc + (A @ B) — single tensor engine instruction</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="785" x2="700" y2="820" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- ================================================================== -->
+  <!-- PASS 3: Fuse DMA -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="200" y="825" width="1000" height="200" rx="12" fill="#0f0f1a" stroke="url(#pass3Grad)" stroke-width="2"/>
+  </g>
+  <circle cx="230" cy="852" r="16" fill="url(#pass3Grad)" filter="url(#glow)"/>
+  <text x="230" y="857" text-anchor="middle" fill="white" font-size="14" font-weight="700">3</text>
+  <text x="260" y="857" fill="#6ee7b7" font-size="16" font-weight="600">nki-fuse-dma</text>
+  <text x="950" y="857" text-anchor="end" fill="#64748b" font-size="12" font-style="italic">FuseDma.cpp</text>
+
+  <line x1="220" y1="868" x2="1180" y2="868" stroke="#0a3d2e" stroke-width="0.5"/>
+
+  <!-- A tile -->
+  <rect x="230" y="878" width="380" height="130" rx="8" fill="#052e16" stroke="#059669" stroke-width="1"/>
+  <text x="420" y="896" text-anchor="middle" fill="#a7f3d0" font-size="11" font-weight="600">CONSUMED — A Tile (6 ops)</text>
+  <text x="250" y="914" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">reinterpret_cast %arg0 → 64×32 view</text>
+  <text x="250" y="930" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">alloc() : memref&lt;64x32&gt;</text>
+  <text x="250" y="946" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">subview src[0,0][%vr,32][1,1]</text>
+  <text x="250" y="962" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">subview dst[0,0][%vr,32][1,1]</text>
+  <text x="250" y="978" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">memref.copy %src → %dst</text>
+  <text x="250" y="994" fill="#6ee7b7" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">bufferization.to_tensor %alloc</text>
+
+  <text x="645" y="940" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
+
+  <rect x="680" y="878" width="480" height="55" rx="8" fill="#022c22" stroke="#047857" stroke-width="1"/>
+  <text x="920" y="896" text-anchor="middle" fill="#a7f3d0" font-size="11" font-weight="600">PRODUCED — A Tile (1 op)</text>
+  <text x="700" y="920" fill="#34d399" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">nki.dma_copy %arg0[%off] strides[%s0,%s1]</text>
+
+  <!-- B tile -->
+  <rect x="680" y="948" width="480" height="55" rx="8" fill="#022c22" stroke="#047857" stroke-width="1"/>
+  <text x="920" y="966" text-anchor="middle" fill="#a7f3d0" font-size="11" font-weight="600">PRODUCED — B Tile (1 op)</text>
+  <text x="700" y="990" fill="#34d399" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">nki.dma_copy %arg1[%off] strides[%s0,%s1]</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="1030" x2="700" y2="1065" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- ================================================================== -->
+  <!-- PASS 4: Fuse Store -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="200" y="1070" width="1000" height="160" rx="12" fill="#0f0f1a" stroke="url(#pass4Grad)" stroke-width="2"/>
+  </g>
+  <circle cx="230" cy="1097" r="16" fill="url(#pass4Grad)" filter="url(#glow)"/>
+  <text x="230" y="1102" text-anchor="middle" fill="white" font-size="14" font-weight="700">4</text>
+  <text x="260" y="1102" fill="#f9a8d4" font-size="16" font-weight="600">nki-fuse-store</text>
+  <text x="950" y="1102" text-anchor="end" fill="#64748b" font-size="12" font-style="italic">FuseStore.cpp</text>
+
+  <line x1="220" y1="1113" x2="1180" y2="1113" stroke="#500724" stroke-width="0.5"/>
+
+  <rect x="230" y="1125" width="380" height="90" rx="8" fill="#500724" stroke="#be185d" stroke-width="1"/>
+  <text x="420" y="1143" text-anchor="middle" fill="#fbcfe8" font-size="11" font-weight="600">CONSUMED (~24 lines)</text>
+  <text x="250" y="1161" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">reinterpret_cast %arg2 → 64×64 view</text>
+  <text x="250" y="1177" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">20 lines bounds math (minsi/maxsi)</text>
+  <text x="250" y="1193" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">extract_slice → subview → materialize</text>
+
+  <text x="645" y="1175" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
+
+  <rect x="680" y="1125" width="480" height="90" rx="8" fill="#3b0721" stroke="#9d174d" stroke-width="1"/>
+  <text x="920" y="1143" text-anchor="middle" fill="#fbcfe8" font-size="11" font-weight="600">PRODUCED (1 op)</text>
+  <text x="700" y="1172" fill="#f472b6" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">nki.dma_store %result into %arg2</text>
+  <text x="700" y="1192" fill="#f472b6" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">  [%off] strides[%s0, %s1]</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="1235" x2="700" y2="1270" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- ================================================================== -->
+  <!-- PASS 5: Fold PSUM Init -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="200" y="1275" width="1000" height="160" rx="12" fill="#0f0f1a" stroke="url(#pass5Grad)" stroke-width="2"/>
+  </g>
+  <circle cx="230" cy="1302" r="16" fill="url(#pass5Grad)" filter="url(#glow)"/>
+  <text x="230" y="1307" text-anchor="middle" fill="white" font-size="14" font-weight="700">5</text>
+  <text x="260" y="1307" fill="#67e8f9" font-size="16" font-weight="600">nki-fold-psum-init</text>
+  <text x="950" y="1307" text-anchor="end" fill="#64748b" font-size="12" font-style="italic">FoldPsumInit.cpp</text>
+
+  <line x1="220" y1="1318" x2="1180" y2="1318" stroke="#083344" stroke-width="0.5"/>
+
+  <rect x="230" y="1330" width="380" height="90" rx="8" fill="#083344" stroke="#0891b2" stroke-width="1"/>
+  <text x="420" y="1348" text-anchor="middle" fill="#a5f3fc" font-size="11" font-weight="600">CONSUMED (2 ops)</text>
+  <text x="250" y="1370" fill="#67e8f9" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%0 = tensor.empty() : tensor&lt;64x64&gt;</text>
+  <text x="250" y="1390" fill="#67e8f9" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%1 = linalg.fill(0.0, %0)</text>
+  <text x="250" y="1410" fill="#0891b2" font-size="10">feeds iter_args of k-loop → nc_matmul.acc</text>
+
+  <text x="645" y="1385" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
+
+  <rect x="680" y="1330" width="480" height="90" rx="8" fill="#042f3d" stroke="#0e7490" stroke-width="1"/>
+  <text x="920" y="1348" text-anchor="middle" fill="#a5f3fc" font-size="11" font-weight="600">PRODUCED (1 op)</text>
+  <text x="700" y="1378" fill="#22d3ee" font-size="13" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;64x64&gt;</text>
+  <text x="700" y="1400" fill="#0891b2" font-size="10">Allocates in hardware Partition Accumulator memory</text>
+
+  <!-- ================================================================== -->
+  <!-- ARROW -->
+  <!-- ================================================================== -->
+  <line x1="700" y1="1440" x2="700" y2="1475" stroke="#34d399" stroke-width="2" marker-end="url(#arrowheadGreen)"/>
+
+  <!-- ================================================================== -->
+  <!-- OUTPUT BOX -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="100" y="1480" width="1200" height="340" rx="12" fill="url(#outputGrad)" stroke="#10b981" stroke-width="2"/>
+  </g>
+  <text x="700" y="1512" text-anchor="middle" fill="#ecfdf5" font-size="18" font-weight="600">
+    OUTPUT: matmul_kernel.lowered.mlir (NKI Dialect — 55 lines)
+  </text>
+  <line x1="130" y1="1525" x2="1270" y2="1525" stroke="#059669" stroke-width="0.5"/>
+
+  <!-- Output code -->
+  <text x="150" y="1550" fill="#6ee7b7" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">func.func @matmul_kernel(%A, %B, %C, %M, %N, %K, strides...) {</text>
+  <text x="170" y="1572" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">// constants (unchanged)</text>
+
+  <text x="170" y="1596" fill="#22d3ee" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;64x64xf32&gt;</text>
+  <text x="750" y="1596" fill="#0e7490" font-size="10">← Pass 5</text>
+
+  <text x="170" y="1620" fill="#a78bfa" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">scf.for %m = 0 to ceil(M/64) {</text>
+  <text x="750" y="1620" fill="#5b21b6" font-size="10">← Pass 1</text>
+
+  <text x="190" y="1644" fill="#a78bfa" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">scf.for %n = 0 to ceil(N/64) {</text>
+  <text x="750" y="1644" fill="#5b21b6" font-size="10">← Pass 1</text>
+
+  <text x="210" y="1668" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">scf.for %k = 0 to ceil(K/32) iter_args(%acc = %psum) {</text>
+
+  <text x="230" y="1692" fill="#34d399" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%a = nki.dma_copy %A[%off_a] strides[%sa0, %sa1]</text>
+  <text x="900" y="1692" fill="#047857" font-size="10">← Pass 3</text>
+
+  <text x="230" y="1716" fill="#34d399" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%b = nki.dma_copy %B[%off_b] strides[%sb0, %sb1]</text>
+  <text x="900" y="1716" fill="#047857" font-size="10">← Pass 3</text>
+
+  <text x="230" y="1740" fill="#fbbf24" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%r = nki.nc_matmul %a, %b, %acc</text>
+  <text x="900" y="1740" fill="#a16207" font-size="10">← Pass 2</text>
+
+  <text x="210" y="1764" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">}</text>
+
+  <text x="210" y="1788" fill="#f472b6" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">nki.dma_store %result into %C[%off_c] strides[%sc0,%sc1]</text>
+  <text x="1020" y="1788" fill="#9d174d" font-size="10">← Pass 4</text>
+
+  <text x="150" y="1808" fill="#6ee7b7" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">}</text>
+
+  <!-- ================================================================== -->
+  <!-- STATS BOX -->
+  <!-- ================================================================== -->
+  <g filter="url(#softShadow)">
+    <rect x="100" y="1860" width="1200" height="320" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  </g>
+  <text x="700" y="1895" text-anchor="middle" fill="#f1f5f9" font-size="18" font-weight="600">Transformation Statistics</text>
+  <line x1="130" y1="1910" x2="1270" y2="1910" stroke="#475569" stroke-width="0.5"/>
+
+  <!-- Table header -->
+  <text x="180" y="1940" fill="#94a3b8" font-size="13" font-weight="600">Category</text>
+  <text x="640" y="1940" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="600">Before</text>
+  <text x="840" y="1940" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="600">After</text>
+  <text x="1060" y="1940" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="600">Reduction</text>
+
+  <line x1="130" y1="1950" x2="1270" y2="1950" stroke="#334155" stroke-width="0.5"/>
+
+  <!-- Row 1 -->
+  <text x="180" y="1972" fill="#e2e8f0" font-size="12">Memory ops (alloc, subview, copy, reinterpret_cast)</text>
+  <text x="640" y="1972" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">14</text>
+  <text x="840" y="1972" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">0</text>
+  <text x="1060" y="1972" text-anchor="middle" fill="#86efac" font-size="12">100%</text>
+
+  <!-- Row 2 -->
+  <text x="180" y="1997" fill="#e2e8f0" font-size="12">Bufferization ops (to_tensor, materialize)</text>
+  <text x="640" y="1997" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">3</text>
+  <text x="840" y="1997" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">0</text>
+  <text x="1060" y="1997" text-anchor="middle" fill="#86efac" font-size="12">100%</text>
+
+  <!-- Row 3 -->
+  <text x="180" y="2022" fill="#e2e8f0" font-size="12">Linalg ops (fill, matmul, add)</text>
+  <text x="640" y="2022" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">4</text>
+  <text x="840" y="2022" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">0</text>
+  <text x="1060" y="2022" text-anchor="middle" fill="#86efac" font-size="12">100%</text>
+
+  <!-- Row 4 -->
+  <text x="180" y="2047" fill="#e2e8f0" font-size="12">Bounds arithmetic (minsi, maxsi, subi)</text>
+  <text x="640" y="2047" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">~15</text>
+  <text x="840" y="2047" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">0</text>
+  <text x="1060" y="2047" text-anchor="middle" fill="#86efac" font-size="12">100%</text>
+
+  <!-- Row 5 -->
+  <text x="180" y="2072" fill="#e2e8f0" font-size="12">NKI dialect ops</text>
+  <text x="640" y="2072" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">0</text>
+  <text x="840" y="2072" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">5</text>
+  <text x="1060" y="2072" text-anchor="middle" fill="#94a3b8" font-size="12">—</text>
+
+  <line x1="130" y1="2085" x2="1270" y2="2085" stroke="#334155" stroke-width="0.5"/>
+
+  <!-- Row 6: Total -->
+  <text x="180" y="2110" fill="#f1f5f9" font-size="13" font-weight="700">Total lines</text>
+  <text x="640" y="2110" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">191</text>
+  <text x="840" y="2110" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">55</text>
+  <text x="1060" y="2110" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">71% ↓</text>
+
+  <!-- Legend -->
+  <text x="300" y="2155" fill="#64748b" font-size="11">Legend:</text>
+  <rect x="370" y="2143" width="14" height="14" rx="3" fill="#6366f1"/>
+  <text x="390" y="2155" fill="#a5b4fc" font-size="11">Pass 1</text>
+  <rect x="450" y="2143" width="14" height="14" rx="3" fill="#f59e0b"/>
+  <text x="470" y="2155" fill="#fcd34d" font-size="11">Pass 2</text>
+  <rect x="530" y="2143" width="14" height="14" rx="3" fill="#10b981"/>
+  <text x="550" y="2155" fill="#6ee7b7" font-size="11">Pass 3</text>
+  <rect x="610" y="2143" width="14" height="14" rx="3" fill="#ec4899"/>
+  <text x="630" y="2155" fill="#f9a8d4" font-size="11">Pass 4</text>
+  <rect x="690" y="2143" width="14" height="14" rx="3" fill="#06b6d4"/>
+  <text x="710" y="2155" fill="#67e8f9" font-size="11">Pass 5</text>
+  <rect x="770" y="2143" width="14" height="14" rx="3" fill="#334155"/>
+  <text x="790" y="2155" fill="#94a3b8" font-size="11">Unchanged</text>
+</svg>
