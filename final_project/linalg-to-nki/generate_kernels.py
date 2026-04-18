@@ -81,7 +81,7 @@ def matmul_kernel(
     tl.store(c_ptrs, accumulator, mask=mask_m[:, None] & mask_n[None, :])
 
 
-def compile_ttir() -> str:
+def compile_ttir(bm: int = BLOCK_M, bn: int = BLOCK_N, bk: int = BLOCK_K) -> str:
     src = tc.ASTSource(
         fn=matmul_kernel,
         signature={
@@ -92,9 +92,9 @@ def compile_ttir() -> str:
             "stride_cm": "i32", "stride_cn": "i32",
         },
         constexprs={
-            "BLOCK_SIZE_M": BLOCK_M,
-            "BLOCK_SIZE_N": BLOCK_N,
-            "BLOCK_SIZE_K": BLOCK_K,
+            "BLOCK_SIZE_M": bm,
+            "BLOCK_SIZE_N": bn,
+            "BLOCK_SIZE_K": bk,
         },
     )
     try:
@@ -115,9 +115,19 @@ def run(cmd):
     return res.stdout
 
 
-def pipeline(out_py: Path) -> None:
-    print(f"  [1/4] triton -> TTIR (BLOCK_SIZE = {BLOCK_M}, {BLOCK_N}, {BLOCK_K})")
-    ttir = compile_ttir()
+def pipeline(
+    out_py: Path,
+    bm: int = BLOCK_M,
+    bn: int = BLOCK_N,
+    bk: int = BLOCK_K,
+    verbose: bool = True,
+) -> None:
+    def log(msg: str) -> None:
+        if verbose:
+            print(msg)
+
+    log(f"  [1/4] triton -> TTIR (BLOCK_SIZE = {bm}, {bn}, {bk})")
+    ttir = compile_ttir(bm, bn, bk)
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -126,7 +136,7 @@ def pipeline(out_py: Path) -> None:
         lowered_path = td / "kernel.lowered.mlir"
         ttir_path.write_text(ttir)
 
-        print("  [2/4] TTIR -> specialized linalg")
+        log("  [2/4] TTIR -> specialized linalg")
         linalg = run([
             TRITON_SHARED_OPT, ttir_path,
             "--triton-to-linalg",
@@ -134,7 +144,7 @@ def pipeline(out_py: Path) -> None:
         ])
         linalg_path.write_text(linalg)
 
-        print("  [3/4] linalg -> lowered NKI IR")
+        log("  [3/4] linalg -> lowered NKI IR")
         lowered = run([
             OPT_BIN, linalg_path,
             "-nki-canonicalize-pid-loops",
@@ -145,7 +155,7 @@ def pipeline(out_py: Path) -> None:
         ])
         lowered_path.write_text(lowered)
 
-        print(f"  [4/4] lowered IR -> NKI Python -> {out_py}")
+        log(f"  [4/4] lowered IR -> NKI Python -> {out_py}")
         out_py.parent.mkdir(parents=True, exist_ok=True)
         run([TRANSLATE_BIN, lowered_path, "-o", out_py])
 
