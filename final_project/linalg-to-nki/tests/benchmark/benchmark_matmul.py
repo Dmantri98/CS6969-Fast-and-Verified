@@ -188,6 +188,8 @@ def main():
     print(head)
     print("  " + "-" * (len(head) - 2))
 
+    rows = []  # [(label, [cell_str, ...]), ...] for the clean summary.
+
     for (M, K, N, tag) in SHAPES:
         lhs = torch.rand((M, K), dtype=torch.float32, device=device)
         rhs = torch.rand((K, N), dtype=torch.float32, device=device)
@@ -218,12 +220,22 @@ def main():
 
         label = f"{shape_str} {tag}"
         print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
+        rows.append((label, cells))
         for (klabel, e, tb) in errors:
             print(f"      {klabel:>10s}: {type(e).__name__}: {e}")
             if verbose:
                 for line in tb.splitlines():
                     print(f"        {line}")
 
+    # Clean summary table, reprinted at the end so it's not buried in
+    # the Neuron compiler's per-kernel log output.
+    print("\n" + "=" * (len(head) - 2))
+    print("SUMMARY (ms/iter)")
+    print("=" * (len(head) - 2))
+    print(head)
+    print("  " + "-" * (len(head) - 2))
+    for (label, cells) in rows:
+        print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
     print("\n(! = diverges from torch.matmul within "
           f"atol={TOL_ATOL}, rtol={TOL_RTOL})")
 
