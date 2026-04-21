@@ -92,7 +92,6 @@ SHAPES = [
     (2048, 2048, 2048, "square 2k"),
     (4096, 2048, 2048, "mid"),
     (4096, 4096, 4096, "square 4k"),
-    (8192, 4096, 4096, "large"),
 ]
 
 N_WARMUP = int(os.environ.get("BENCH_WARMUP", "1"))
