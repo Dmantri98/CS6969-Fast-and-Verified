@@ -62,6 +62,15 @@ REF_PATH = Path(os.environ.get("NKI_SAMPLES_PATH", str(DEFAULT_REF_PATH)))
 
 
 # (attr name in reference module, short label, (M, K, N) -> bool).
+# The predicates match the explicit asserts at the top of each kernel
+# in nki-samples/src/nki_samples/tutorials/matrix_multiplication/
+# matrix_multiplication_nki_kernels.py:
+#   tiled            lines 96-98   : M%128,   N%512,  K%128
+#   hoist_load       lines 164-166 : M%128,   N%512,  K%128
+#   block_free_dim   lines 251-252 : M%256,   N%1024  (K%128 implicit)
+#   fully_optimized  lines 365-367 : M%2048,  N%1024, K%1024  (defaults)
+# Calling a reference outside its predicate raises AssertionError; we
+# emit "n/a" in the table instead.
 REF_KERNELS = [
     ("nki_matmul_tiled_", "tiled",
      lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
@@ -74,18 +83,16 @@ REF_KERNELS = [
 ]
 
 
-# A small shape sweep: some shapes let several references participate,
-# some only our emitted kernel can handle.
+# Shapes aligned to every reference kernel's tightest constraint
+# (fully_optimized with defaults): M % 2048, K % 1024, N % 1024. That
+# way all four references participate in every row -- we talk about
+# the emitted kernel's shape-generality in the report, not here.
 SHAPES = [
-    # Satisfy tiled + hoist_load + block_free (not fully_opt).
-    ( 512, 1024, 1024, "tiled+hoist+block_free"),
-    (1024, 1024, 1024, "tiled+hoist+block_free"),
-    # Satisfy every reference kernel.
-    (2048, 1024, 1024, "all references"),
-    (4096, 2048, 2048, "all references (large)"),
-    # Emitted only (ragged / small).
-    ( 500,  250,  700, "emitted only (ragged)"),
-    ( 128,  100,  512, "emitted only (partial K)"),
+    (2048, 1024, 1024, "smallest all-refs"),
+    (2048, 2048, 2048, "square 2k"),
+    (4096, 2048, 2048, "mid"),
+    (4096, 4096, 4096, "square 4k"),
+    (8192, 4096, 4096, "large"),
 ]
 
 N_WARMUP = int(os.environ.get("BENCH_WARMUP", "1"))
