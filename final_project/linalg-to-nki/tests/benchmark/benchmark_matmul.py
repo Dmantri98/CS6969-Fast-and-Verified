@@ -29,11 +29,15 @@ Override:
 
 Methodology
 -----------
-For each (kernel, shape) we run N_WARMUP calls (to cover any JIT-compile
-or device-caching cost) then N_ITERS timed calls, synchronising via
-`xm.mark_step()` + `xm.wait_device_ops()` so wall time reflects actual
-device execution. Correctness is checked with `torch.allclose` against
-`torch.matmul` using the same tolerance as the existing suites.
+The reference kernels stamp random temp paths into their generated AST,
+so each call produces a fresh HLO hash and pays a full neuronxcc compile
+instead of hitting the disk cache. A single timed batch therefore mixes
+compile and execute time; dividing by N does not give a meaningful
+per-iter execute cost. We use a subtract-compile approach: measure T(1)
+and T(N) under the same setup and report (T(N) - T(1)) / (N - 1),
+assuming per-batch compile cost is ~constant between the two runs.
+Correctness is checked with `torch.allclose` against `torch.matmul`
+using the same tolerance as the existing suites.
 
 Run (on Trainium):
     python tests/benchmark/benchmark_matmul.py
@@ -95,7 +99,7 @@ SHAPES = [
 ]
 
 N_WARMUP = int(os.environ.get("BENCH_WARMUP", "1"))
-N_ITERS = int(os.environ.get("BENCH_ITERS", "3"))
+N_ITERS = int(os.environ.get("BENCH_ITERS", "10"))
 
 TOL_ATOL = 1e-4
 TOL_RTOL = 1e-2
@@ -127,20 +131,33 @@ def get_device():
 
 
 def time_kernel(kernel, lhsT, rhs):
-    # Warmup: sync per call so the neuronxcc disk cache sees each unique
-    # HLO (if the tracer is going to emit the same HLO twice, it'll have
-    # done so by the end of warmup).
+    # Subtract-compile methodology. The nki-samples reference kernels
+    # stamp random temp paths into their generated AST, so every call
+    # produces a fresh HLO hash and pays a full neuronxcc compile.
+    # Measuring one batch of N calls gives (compile + N*exec); we can't
+    # divide by N to get execute time. Instead we measure two batches:
+    #   T(1) ~= compile + 1*exec
+    #   T(N) ~= compile + N*exec
+    # and report (T(N) - T(1)) / (N - 1) = exec. This assumes the
+    # per-batch compile cost is roughly constant between the two runs,
+    # which holds when the kernel's HLO structure is the same and only
+    # the stamped paths differ.
     for _ in range(N_WARMUP):
         _ = kernel(lhsT, rhs)
         sync()
-    # Timed: batch N_ITERS calls into a single sync so torch_xla's
-    # per-trace compile cost is amortized across the batch. The
-    # per-iter number is elapsed / N_ITERS.
+    start = time.perf_counter()
+    out_one = kernel(lhsT, rhs)
+    sync()
+    t_one = time.perf_counter() - start
     start = time.perf_counter()
     outs = [kernel(lhsT, rhs) for _ in range(N_ITERS)]
     sync()
-    elapsed = (time.perf_counter() - start) / N_ITERS
-    return elapsed, outs[-1]
+    t_n = time.perf_counter() - start
+    if N_ITERS > 1:
+        exec_per_iter = (t_n - t_one) / (N_ITERS - 1)
+    else:
+        exec_per_iter = t_n
+    return exec_per_iter, outs[-1]
 
 
 def is_close(out, ref):
