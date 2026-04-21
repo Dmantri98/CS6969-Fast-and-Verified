@@ -121,15 +121,20 @@ def get_device():
 
 
 def time_kernel(kernel, lhsT, rhs):
+    # Warmup: sync per call so the neuronxcc disk cache sees each unique
+    # HLO (if the tracer is going to emit the same HLO twice, it'll have
+    # done so by the end of warmup).
     for _ in range(N_WARMUP):
         _ = kernel(lhsT, rhs)
         sync()
+    # Timed: batch N_ITERS calls into a single sync so torch_xla's
+    # per-trace compile cost is amortized across the batch. The
+    # per-iter number is elapsed / N_ITERS.
     start = time.perf_counter()
-    for _ in range(N_ITERS):
-        out = kernel(lhsT, rhs)
-        sync()
+    outs = [kernel(lhsT, rhs) for _ in range(N_ITERS)]
+    sync()
     elapsed = (time.perf_counter() - start) / N_ITERS
-    return elapsed, out
+    return elapsed, outs[-1]
 
 
 def is_close(out, ref):
