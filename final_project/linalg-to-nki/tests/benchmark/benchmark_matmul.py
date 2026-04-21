@@ -42,9 +42,11 @@ import importlib.util
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import torch
+import torch_xla
 from torch_xla.core import xla_model as xm
 
 
@@ -104,8 +106,18 @@ def load_module(py_path: Path, unique_name: str):
 
 
 def sync():
-    xm.mark_step()
+    # Prefer the new torch_xla.sync API if present; fall back to mark_step.
+    if hasattr(torch_xla, "sync"):
+        torch_xla.sync()
+    else:
+        xm.mark_step()
     xm.wait_device_ops()
+
+
+def get_device():
+    if hasattr(torch_xla, "device"):
+        return torch_xla.device()
+    return xm.xla_device()
 
 
 def time_kernel(kernel, lhsT, rhs):
@@ -153,7 +165,8 @@ def main():
             continue
         refs.append((label, fn, supports))
 
-    device = xm.xla_device()
+    device = get_device()
+    verbose = os.environ.get("BENCH_VERBOSE") == "1"
     print(f"=== matmul benchmark on {device} "
           f"(warmup={N_WARMUP}, iters={N_ITERS}) ===")
     print(f"    emitted: {EMITTED_PATH}")
@@ -172,14 +185,16 @@ def main():
 
         shape_str = f"({M:>4d} x {K:>4d} x {N:>4d})"
         cells = []
+        errors = []
 
         try:
             t, out = time_kernel(emitted_fn, lhs.T, rhs)
             cells.append(fmt_cell(t, is_close(out, ref_out)))
         except Exception as e:
-            cells.append(f"ERR:{type(e).__name__[:6]:>6s}")
+            cells.append(f"{'ERR':>10s}")
+            errors.append(("emitted", e, traceback.format_exc()))
 
-        for (_, fn, supports) in refs:
+        for (rlabel, fn, supports) in refs:
             if not supports(M, K, N):
                 cells.append(f"{'n/a':>10s}")
                 continue
@@ -187,10 +202,16 @@ def main():
                 t, out = time_kernel(fn, lhs.T, rhs)
                 cells.append(fmt_cell(t, is_close(out, ref_out)))
             except Exception as e:
-                cells.append(f"ERR:{type(e).__name__[:6]:>6s}")
+                cells.append(f"{'ERR':>10s}")
+                errors.append((rlabel, e, traceback.format_exc()))
 
         label = f"{shape_str} {tag}"
         print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
+        for (klabel, e, tb) in errors:
+            print(f"      {klabel:>10s}: {type(e).__name__}: {e}")
+            if verbose:
+                for line in tb.splitlines():
+                    print(f"        {line}")
 
     print("\n(! = diverges from torch.matmul within "
           f"atol={TOL_ATOL}, rtol={TOL_RTOL})")
