@@ -36,7 +36,10 @@ OPT_BIN = HERE / "build/bin/linalg-to-nki-opt"
 TRANSLATE_BIN = HERE / "build/bin/linalg-to-nki-translate"
 OUT_DIR = HERE / "generated_relu"
 
-BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 128
+# (128, 512, 128) matches the emitter's TILE_{M,K,N}=128/128/512, so the IR's
+# ⌈N/512⌉ loop bound reads naturally end-to-end. The emitted Python is the
+# same regardless of Triton BLOCK_SIZE.
+BLOCK_M, BLOCK_N, BLOCK_K = 128, 512, 128
 
 
 @triton.jit

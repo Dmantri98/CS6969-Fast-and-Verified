@@ -19,17 +19,31 @@ from torch_xla.core import xla_model as xm
 
 
 HERE = Path(__file__).resolve().parent
-GEN_DIR = HERE / "generated_sweep"
+PROJECT_ROOT = HERE.parent.parent
+GEN_DIR = PROJECT_ROOT / "generated_sweep"
 
 KERNEL_RE = re.compile(r"matmul_kernel_(\d+)_(\d+)_(\d+)\.py$")
 
 
-# Problem shapes: sanity-tier sweep (not full coverage -- test_matmul.py
-# already exhausts the canonical config).
+# Problem shapes spanning the masking regimes. Run N_kernels × len(SHAPES)
+# against torch.matmul; each kernel should produce the same answer regardless
+# of the BLOCK config it was compiled from (emitter normalizes all to the
+# same Python).
 SHAPES = [
-    (128, 128, 512, "aligned"),
-    (100, 128, 400, "ragged M,N"),
-    (200, 150, 300, "ragged all"),
+    # Aligned to emitter tile boundaries.
+    (128, 128,  512, "single tile, exact"),
+    (256, 128,  512, "2 M-tiles"),
+    (128, 128, 1024, "2 N-tiles"),
+    # Ragged on one axis.
+    (100, 128,  512, "partial M"),
+    (128, 128,  400, "partial N"),
+    (128, 100,  512, "partial K"),
+    # Ragged on every axis.
+    (200, 150,  300, "partial M, K, N (small)"),
+    (500, 250,  700, "partial M, K, N (mid)"),
+    # Degenerate.
+    (  1,   1,    1, "degenerate 1x1x1"),
+    ( 64,   1,   64, "degenerate Mx1xN"),
 ]
 
 

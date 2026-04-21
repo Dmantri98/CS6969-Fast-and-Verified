@@ -38,10 +38,12 @@ OPT_BIN = HERE / "build/bin/linalg-to-nki-opt"
 TRANSLATE_BIN = HERE / "build/bin/linalg-to-nki-translate"
 OUT_DIR = HERE / "generated"
 
-# Triton-level block size. Any valid size works -- the emitter overrides --
-# but 128/128/128 matches the hardware PE-array shape and keeps the linalg
-# intermediates readable.
-BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 128
+# Triton-level block size. Any valid size works -- the emitter overrides to
+# 128/128/512 regardless -- but picking (128, 512, 128) makes the IR's loop
+# bounds (⌈N/512⌉) match the emitter's TILE_N, so the intermediates read
+# naturally end-to-end. 128 on the partition/stationary axes matches the
+# NC-v2 PE array.
+BLOCK_M, BLOCK_N, BLOCK_K = 128, 512, 128
 
 
 @triton.jit

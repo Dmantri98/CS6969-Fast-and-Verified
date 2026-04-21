@@ -136,7 +136,7 @@ module {
       // --- Tile matmul: accumulator += tl.dot(a, b) ---
       %61 = tensor.empty() : tensor<64x64xf32>
       %62 = linalg.fill ins(%cst : f32) outs(%61 : tensor<64x64xf32>) -> tensor<64x64xf32>  // temp = zeros(64, 64)
-      %63 = linalg.matmul ins(%53, %60 : tensor<64x32xf32>, tensor<32x64xf32>) outs(%62 : tensor<64x64xf32>) -> tensor<64x64xf32>  // temp = A_tile @ B_tile
+      %63 =// temp = A_tile @ B_tile
       %64 = linalg.add ins(%arg19, %63 : tensor<64x64xf32>, tensor<64x64xf32>) outs(%arg19 : tensor<64x64xf32>) -> tensor<64x64xf32>  // accumulator += temp
 
       // Yield updated accumulator to next iteration

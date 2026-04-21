@@ -1,0 +1,200 @@
+"""
+Benchmark the emitted matmul kernel against the AWS nki-samples
+reference kernels on a shared set of shapes.
+
+Loaded kernels
+--------------
+  emitted    : generated/matmul_kernel.py  (our pipeline output)
+  tiled      : nki_matmul_tiled_
+  hoist_load : nki_matmul_hoist_load_
+  block_free : nki_matmul_block_free_dimension_
+  fully_opt  : nki_matmul_fully_optimized_  (default TILES_IN_BLOCK)
+
+nki_matmul_basic_ is intentionally skipped: it is hardcoded to a
+single 64x128x512 matmul and is not comparable across shapes.
+
+Each reference kernel has its own alignment constraints; for each
+shape we only run the kernels whose constraints are satisfied. The
+emitted kernel masks at every load/store and runs on every shape we
+include.
+
+Reference file path
+-------------------
+Default:
+  /home/ubuntu/nki-samples/src/nki_samples/tutorials/matrix_multiplication/matrix_multiplication_nki_kernels.py
+
+Override:
+  NKI_SAMPLES_PATH=/abs/path/to/matrix_multiplication_nki_kernels.py \
+      python tests/benchmark/benchmark_matmul.py
+
+Methodology
+-----------
+For each (kernel, shape) we run N_WARMUP calls (to cover any JIT-compile
+or device-caching cost) then N_ITERS timed calls, synchronising via
+`xm.mark_step()` + `xm.wait_device_ops()` so wall time reflects actual
+device execution. Correctness is checked with `torch.allclose` against
+`torch.matmul` using the same tolerance as the existing suites.
+
+Run (on Trainium):
+    python tests/benchmark/benchmark_matmul.py
+"""
+import importlib.util
+import os
+import sys
+import time
+from pathlib import Path
+
+import torch
+from torch_xla.core import xla_model as xm
+
+
+HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parent.parent
+EMITTED_PATH = PROJECT_ROOT / "generated" / "matmul_kernel.py"
+
+DEFAULT_REF_PATH = Path(
+    "/home/ubuntu/nki-samples/src/nki_samples/tutorials/"
+    "matrix_multiplication/matrix_multiplication_nki_kernels.py"
+)
+REF_PATH = Path(os.environ.get("NKI_SAMPLES_PATH", str(DEFAULT_REF_PATH)))
+
+
+# (attr name in reference module, short label, (M, K, N) -> bool).
+REF_KERNELS = [
+    ("nki_matmul_tiled_", "tiled",
+     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
+    ("nki_matmul_hoist_load_", "hoist_load",
+     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
+    ("nki_matmul_block_free_dimension_", "block_free",
+     lambda M, K, N: M % 256 == 0 and K % 128 == 0 and N % 1024 == 0),
+    ("nki_matmul_fully_optimized_", "fully_opt",
+     lambda M, K, N: M % 2048 == 0 and K % 1024 == 0 and N % 1024 == 0),
+]
+
+
+# A small shape sweep: some shapes let several references participate,
+# some only our emitted kernel can handle.
+SHAPES = [
+    # Satisfy tiled + hoist_load + block_free (not fully_opt).
+    ( 512, 1024, 1024, "tiled+hoist+block_free"),
+    (1024, 1024, 1024, "tiled+hoist+block_free"),
+    # Satisfy every reference kernel.
+    (2048, 1024, 1024, "all references"),
+    (4096, 2048, 2048, "all references (large)"),
+    # Emitted only (ragged / small).
+    ( 500,  250,  700, "emitted only (ragged)"),
+    ( 128,  100,  512, "emitted only (partial K)"),
+]
+
+N_WARMUP = 2
+N_ITERS = 5
+
+TOL_ATOL = 1e-4
+TOL_RTOL = 1e-2
+
+
+def load_module(py_path: Path, unique_name: str):
+    if not py_path.exists():
+        raise SystemExit(f"missing file: {py_path}")
+    spec = importlib.util.spec_from_file_location(unique_name, py_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[unique_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def sync():
+    xm.mark_step()
+    xm.wait_device_ops()
+
+
+def time_kernel(kernel, lhsT, rhs):
+    for _ in range(N_WARMUP):
+        _ = kernel(lhsT, rhs)
+        sync()
+    start = time.perf_counter()
+    for _ in range(N_ITERS):
+        out = kernel(lhsT, rhs)
+        sync()
+    elapsed = (time.perf_counter() - start) / N_ITERS
+    return elapsed, out
+
+
+def is_close(out, ref):
+    return torch.allclose(out, ref, atol=TOL_ATOL, rtol=TOL_RTOL)
+
+
+def fmt_cell(t_s: float, ok: bool) -> str:
+    mark = " " if ok else "!"
+    return f"{t_s*1e3:>8.2f}ms{mark}"
+
+
+def main():
+    if not EMITTED_PATH.exists():
+        raise SystemExit(
+            f"{EMITTED_PATH} missing -- run `python generate_kernels.py` first"
+        )
+    if not REF_PATH.exists():
+        raise SystemExit(
+            f"reference file not found: {REF_PATH}\n"
+            f"set NKI_SAMPLES_PATH to the absolute path of "
+            f"matrix_multiplication_nki_kernels.py"
+        )
+
+    emitted_mod = load_module(EMITTED_PATH, "emitted_matmul_kernel")
+    ref_mod = load_module(REF_PATH, "nki_samples_matmul_kernels")
+
+    emitted_fn = emitted_mod.matmul_kernel_nki
+    refs = []
+    for attr, label, supports in REF_KERNELS:
+        fn = getattr(ref_mod, attr, None)
+        if fn is None:
+            print(f"  WARN  reference kernel '{attr}' not found; skipping")
+            continue
+        refs.append((label, fn, supports))
+
+    device = xm.xla_device()
+    print(f"=== matmul benchmark on {device} "
+          f"(warmup={N_WARMUP}, iters={N_ITERS}) ===")
+    print(f"    emitted: {EMITTED_PATH}")
+    print(f"    refs   : {REF_PATH}\n")
+
+    col_labels = ["emitted"] + [l for (l, _, _) in refs]
+    head = f"  {'shape':<28s}  " + "  ".join(f"{c:>10s}" for c in col_labels)
+    print(head)
+    print("  " + "-" * (len(head) - 2))
+
+    for (M, K, N, tag) in SHAPES:
+        lhs = torch.rand((M, K), dtype=torch.float32, device=device)
+        rhs = torch.rand((K, N), dtype=torch.float32, device=device)
+        ref_out = torch.matmul(lhs, rhs)
+        sync()
+
+        shape_str = f"({M:>4d} x {K:>4d} x {N:>4d})"
+        cells = []
+
+        try:
+            t, out = time_kernel(emitted_fn, lhs.T, rhs)
+            cells.append(fmt_cell(t, is_close(out, ref_out)))
+        except Exception as e:
+            cells.append(f"ERR:{type(e).__name__[:6]:>6s}")
+
+        for (_, fn, supports) in refs:
+            if not supports(M, K, N):
+                cells.append(f"{'n/a':>10s}")
+                continue
+            try:
+                t, out = time_kernel(fn, lhs.T, rhs)
+                cells.append(fmt_cell(t, is_close(out, ref_out)))
+            except Exception as e:
+                cells.append(f"ERR:{type(e).__name__[:6]:>6s}")
+
+        label = f"{shape_str} {tag}"
+        print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
+
+    print("\n(! = diverges from torch.matmul within "
+          f"atol={TOL_ATOL}, rtol={TOL_RTOL})")
+
+
+if __name__ == "__main__":
+    main()

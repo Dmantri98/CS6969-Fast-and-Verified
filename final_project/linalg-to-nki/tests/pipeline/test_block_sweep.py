@@ -32,25 +32,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-from generate_kernels import (
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from generate_kernels import (  # noqa: E402
     OPT_BIN,
     TRANSLATE_BIN,
     TRITON_SHARED_OPT,
     compile_ttir,
 )
-
-
-# (BM, BN, BK, description). Triton requires powers of 2 for tl.dot operands.
-# Sweep covers: sub-PE tiles, canonical, and each axis individually enlarged.
-CONFIGS = [
-    ( 32,  32,  32, "tiny cube (all < PE)"),
-    ( 64,  64,  64, "small cube"),
-    (128, 128, 128, "canonical"),
-    (256, 128, 128, "wide M"),
-    (128, 256, 128, "wide N"),
-    (128, 128, 256, "wide K"),
-    ( 64, 128,  32, "mixed small"),
-]
+from sweep_configs import CONFIGS  # noqa: E402
 
 
 def run_stage(cmd) -> tuple[bool, str, str]:

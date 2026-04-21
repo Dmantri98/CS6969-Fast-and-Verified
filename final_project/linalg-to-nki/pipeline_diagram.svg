@@ -63,7 +63,7 @@
     Triton → NKI Compilation Pipeline
   </text>
   <text x="700" y="82" text-anchor="middle" fill="#94a3b8" font-size="14">
-    matmul_kernel.linalg (99 lines) → matmul_kernel.lowered.mlir (52 lines) — BLOCK_SIZE_{M,N,K} = 128
+    matmul_kernel.linalg (96 lines) → matmul_kernel.lowered.mlir (54 lines) — BLOCK_SIZE_{M,N,K} = (128, 512, 128)
   </text>
 
   <!-- ================================================================== -->
@@ -81,7 +81,7 @@
   <!-- Section: Constants -->
   <rect x="130" y="170" width="200" height="50" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
   <text x="230" y="192" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Constants</text>
-  <text x="230" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">c127, c128, cst=0.0</text>
+  <text x="230" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">c127, c128, c511, c512, cst=0.0</text>
 
   <!-- Section: Acc Init (cyan - Pass 5) -->
   <rect x="340" y="170" width="220" height="50" rx="6" fill="#083344" stroke="#06b6d4" stroke-width="1.5"/>
@@ -112,20 +112,20 @@
 
   <!-- B tile load chain (green - Pass 3) -->
   <rect x="500" y="235" width="360" height="55" rx="6" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
-  <text x="680" y="255" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">B Tile Load Chain (6 ops, 128×128)</text>
+  <text x="680" y="255" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">B Tile Load Chain (6 ops, 128×512)</text>
   <text x="680" y="270" text-anchor="middle" fill="#a7f3d0" font-size="9">reinterpret_cast → alloc → subview×2 → copy → to_tensor</text>
-  <text x="680" y="283" text-anchor="middle" fill="#6ee7b7" font-size="9" font-style="italic">produces tensor&lt;128x128xf32&gt;</text>
+  <text x="680" y="283" text-anchor="middle" fill="#6ee7b7" font-size="9" font-style="italic">produces tensor&lt;128x512xf32&gt;</text>
 
   <!-- Matmul+Add (orange - Pass 2) -->
   <rect x="870" y="235" width="290" height="55" rx="6" fill="#431407" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="1015" y="255" text-anchor="middle" fill="#fcd34d" font-size="11" font-weight="600">Matmul + Accumulate (4 ops)</text>
   <text x="1015" y="270" text-anchor="middle" fill="#fde68a" font-size="9">empty → fill(0) → matmul → add</text>
-  <text x="1015" y="283" text-anchor="middle" fill="#fcd34d" font-size="9" font-style="italic">on tensor&lt;128x128xf32&gt;</text>
+  <text x="1015" y="283" text-anchor="middle" fill="#fcd34d" font-size="9" font-style="italic">acc: tensor&lt;128x512xf32&gt;</text>
 
   <!-- Store chain (pink - Pass 4) -->
   <rect x="130" y="305" width="1030" height="50" rx="6" fill="#500724" stroke="#ec4899" stroke-width="1.5"/>
   <text x="645" y="325" text-anchor="middle" fill="#f9a8d4" font-size="11" font-weight="600">Store Result Chain</text>
-  <text x="645" y="340" text-anchor="middle" fill="#fbcfe8" font-size="9">reinterpret_cast C → bounds math (minsi/maxsi) → extract_slice → subview → materialize_in_destination  (128×128 tile)</text>
+  <text x="645" y="340" text-anchor="middle" fill="#fbcfe8" font-size="9">reinterpret_cast C → bounds math (minsi/maxsi) → extract_slice → subview → materialize_in_destination  (128×512 tile)</text>
 
   <!-- ================================================================== -->
   <!-- ARROW: Input → Pass 1 -->
@@ -152,7 +152,7 @@
   <text x="250" y="506" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%3 = arith.divsi %arg15, %num_n</text>
   <text x="250" y="522" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%4 = arith.remsi %arg15, %num_n</text>
   <text x="250" y="538" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%5 = arith.muli %3, %c128</text>
-  <text x="250" y="554" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%6 = arith.muli %4, %c128</text>
+  <text x="250" y="554" fill="#818cf8" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%6 = arith.muli %4, %c512</text>
 
   <!-- Arrow -->
   <text x="620" y="520" text-anchor="middle" fill="#94a3b8" font-size="28">→</text>
@@ -161,9 +161,9 @@
   <rect x="660" y="470" width="500" height="90" rx="8" fill="#1a0f38" stroke="#7c3aed" stroke-width="1"/>
   <text x="910" y="488" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">PRODUCED</text>
   <text x="680" y="506" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">scf.for %m = 0 to ⌈M/128⌉ {</text>
-  <text x="680" y="522" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">  scf.for %n = 0 to ⌈N/128⌉ {</text>
+  <text x="680" y="522" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">  scf.for %n = 0 to ⌈N/512⌉ {</text>
   <text x="680" y="538" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">    %rm = muli %m, 128  // replaces divsi</text>
-  <text x="680" y="554" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">    %rn = muli %n, 128  // replaces remsi</text>
+  <text x="680" y="554" fill="#a78bfa" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">    %rn = muli %n, 512  // replaces remsi</text>
 
   <!-- ================================================================== -->
   <!-- ARROW -->
@@ -185,7 +185,7 @@
 
   <rect x="230" y="675" width="380" height="90" rx="8" fill="#451a03" stroke="#b45309" stroke-width="1"/>
   <text x="420" y="693" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="600">CONSUMED (4 ops)</text>
-  <text x="250" y="711" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%61 = tensor.empty() : &lt;128x128&gt;</text>
+  <text x="250" y="711" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%61 = tensor.empty() : &lt;128x512&gt;</text>
   <text x="250" y="727" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%62 = linalg.fill(0.0, %61)</text>
   <text x="250" y="743" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%63 = linalg.matmul(%A, %B, %62)</text>
   <text x="250" y="759" fill="#fbbf24" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%64 = linalg.add(%acc, %63)</text>
@@ -195,7 +195,7 @@
   <rect x="680" y="675" width="480" height="90" rx="8" fill="#3d1f00" stroke="#d97706" stroke-width="1"/>
   <text x="920" y="693" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="600">PRODUCED (1 op)</text>
   <text x="700" y="725" fill="#fbbf24" font-size="13" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%34 = nki.nc_matmul %A, %B, %acc</text>
-  <text x="700" y="748" fill="#a3842a" font-size="10">result = acc + (A @ B) — single tensor engine instruction, 128×128 PSUM</text>
+  <text x="700" y="748" fill="#a3842a" font-size="10">result = acc + (A @ B) — single tensor engine instruction, 128×512 PSUM</text>
 
   <!-- ================================================================== -->
   <!-- ARROW -->
@@ -256,7 +256,7 @@
 
   <rect x="230" y="1125" width="380" height="90" rx="8" fill="#500724" stroke="#be185d" stroke-width="1"/>
   <text x="420" y="1143" text-anchor="middle" fill="#fbcfe8" font-size="11" font-weight="600">CONSUMED</text>
-  <text x="250" y="1161" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">reinterpret_cast %arg2 → 128×128 view</text>
+  <text x="250" y="1161" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">reinterpret_cast %arg2 → 128×512 view</text>
   <text x="250" y="1177" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">bounds math (minsi/maxsi)</text>
   <text x="250" y="1193" fill="#f9a8d4" font-size="10" font-family="'SF Mono', 'Fira Code', monospace">extract_slice → subview → materialize</text>
 
@@ -287,7 +287,7 @@
 
   <rect x="230" y="1330" width="380" height="90" rx="8" fill="#083344" stroke="#0891b2" stroke-width="1"/>
   <text x="420" y="1348" text-anchor="middle" fill="#a5f3fc" font-size="11" font-weight="600">CONSUMED (2 ops)</text>
-  <text x="250" y="1370" fill="#67e8f9" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%0 = tensor.empty() : tensor&lt;128x128&gt;</text>
+  <text x="250" y="1370" fill="#67e8f9" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%0 = tensor.empty() : tensor&lt;128x512&gt;</text>
   <text x="250" y="1390" fill="#67e8f9" font-size="11" font-family="'SF Mono', 'Fira Code', monospace">%1 = linalg.fill(0.0, %0)</text>
   <text x="250" y="1410" fill="#0891b2" font-size="10">feeds iter_args of k-loop → nc_matmul.acc</text>
 
@@ -295,7 +295,7 @@
 
   <rect x="680" y="1330" width="480" height="90" rx="8" fill="#042f3d" stroke="#0e7490" stroke-width="1"/>
   <text x="920" y="1348" text-anchor="middle" fill="#a5f3fc" font-size="11" font-weight="600">PRODUCED (1 op)</text>
-  <text x="700" y="1378" fill="#22d3ee" font-size="13" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;128x128&gt;</text>
+  <text x="700" y="1378" fill="#22d3ee" font-size="13" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;128x512&gt;</text>
   <text x="700" y="1400" fill="#0891b2" font-size="10">Allocates in hardware Partition Accumulator (PSUM) memory</text>
 
   <!-- ================================================================== -->
@@ -310,21 +310,21 @@
     <rect x="100" y="1480" width="1200" height="360" rx="12" fill="url(#outputGrad)" stroke="#10b981" stroke-width="2"/>
   </g>
   <text x="700" y="1512" text-anchor="middle" fill="#ecfdf5" font-size="18" font-weight="600">
-    OUTPUT: matmul_kernel.lowered.mlir (NKI Dialect — 52 lines)
+    OUTPUT: matmul_kernel.lowered.mlir (NKI Dialect — 54 lines)
   </text>
   <line x1="130" y1="1525" x2="1270" y2="1525" stroke="#059669" stroke-width="0.5"/>
 
   <!-- Output code -->
   <text x="150" y="1550" fill="#6ee7b7" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">func.func @matmul_kernel(%A, %B, %C, %M, %N, %K, strides...) {</text>
-  <text x="170" y="1572" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">// %c127_i32, %c128_i32 constants (unchanged)</text>
+  <text x="170" y="1572" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">// %c127, %c128, %c511, %c512 constants</text>
 
-  <text x="170" y="1596" fill="#22d3ee" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;128x128xf32&gt;</text>
+  <text x="170" y="1596" fill="#22d3ee" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%2 = nki.psum_alloc : tensor&lt;128x512xf32&gt;</text>
   <text x="800" y="1596" fill="#0e7490" font-size="10">← Pass 5</text>
 
   <text x="170" y="1620" fill="#a78bfa" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">scf.for %m = 0 to ⌈M/128⌉ {</text>
   <text x="800" y="1620" fill="#5b21b6" font-size="10">← Pass 1</text>
 
-  <text x="190" y="1644" fill="#a78bfa" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">scf.for %n = 0 to ⌈N/128⌉ {</text>
+  <text x="190" y="1644" fill="#a78bfa" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">scf.for %n = 0 to ⌈N/512⌉ {</text>
   <text x="800" y="1644" fill="#5b21b6" font-size="10">← Pass 1</text>
 
   <text x="210" y="1668" fill="#94a3b8" font-size="12" font-family="'SF Mono', 'Fira Code', monospace">scf.for %k = 0 to ⌈K/128⌉ iter_args(%acc = %psum) {</text>
@@ -333,7 +333,7 @@
   <text x="900" y="1692" fill="#047857" font-size="10">← Pass 3  (tensor&lt;128x128&gt;)</text>
 
   <text x="230" y="1716" fill="#34d399" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%b = nki.dma_copy %B[%off_b] strides[%sb0, %sb1]</text>
-  <text x="900" y="1716" fill="#047857" font-size="10">← Pass 3  (tensor&lt;128x128&gt;)</text>
+  <text x="900" y="1716" fill="#047857" font-size="10">← Pass 3  (tensor&lt;128x512&gt;)</text>
 
   <text x="230" y="1740" fill="#fbbf24" font-size="12" font-family="'SF Mono', 'Fira Code', monospace" font-weight="600">%r = nki.nc_matmul %a, %b, %acc</text>
   <text x="900" y="1740" fill="#a16207" font-size="10">← Pass 2</text>
@@ -348,7 +348,7 @@
   <!-- Emitter tile-size note -->
   <rect x="150" y="1820" width="1100" height="14" rx="3" fill="#042f2e" stroke="#14b8a6" stroke-width="0.8"/>
   <text x="700" y="1831" text-anchor="middle" fill="#5eead4" font-size="10" font-style="italic">
-    Python emitter then re-tiles each 128×128 IR tile into NKI Python with TILE_M=128, TILE_K=128, TILE_N=512  (max NC-v2 PE-array throughput).
+    IR tile shape (128×512) matches the emitter's TILE_{M,K,N} = 128/128/512 — one physical NC-v2 matmul per IR nc_matmul, no re-tiling.
   </text>
 
   <!-- ================================================================== -->
@@ -402,9 +402,9 @@
 
   <!-- Row 6: Total -->
   <text x="180" y="2130" fill="#f1f5f9" font-size="13" font-weight="700">Total lines</text>
-  <text x="640" y="2130" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">99</text>
-  <text x="840" y="2130" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">52</text>
-  <text x="1060" y="2130" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">47% ↓</text>
+  <text x="640" y="2130" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">96</text>
+  <text x="840" y="2130" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">54</text>
+  <text x="1060" y="2130" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">44% ↓</text>
 
   <!-- Legend -->
   <text x="300" y="2185" fill="#64748b" font-size="11">Legend:</text>

@@ -20,7 +20,8 @@ from torch_xla.core import xla_model as xm
 
 
 HERE = Path(__file__).resolve().parent
-GEN_DIR = HERE / "generated"
+PROJECT_ROOT = HERE.parent.parent
+GEN_DIR = PROJECT_ROOT / "generated"
 KERNEL_PATH = GEN_DIR / "matmul_kernel.py"
 
 

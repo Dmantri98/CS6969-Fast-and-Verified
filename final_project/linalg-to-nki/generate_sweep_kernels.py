@@ -28,7 +28,7 @@ from generate_kernels import (
     TRITON_SHARED_OPT,
     compile_ttir,
 )
-from test_block_sweep import CONFIGS
+from sweep_configs import CONFIGS
 
 
 HERE = Path(__file__).resolve().parent
