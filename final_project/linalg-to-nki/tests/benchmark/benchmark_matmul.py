@@ -88,8 +88,8 @@ SHAPES = [
     ( 128,  100,  512, "emitted only (partial K)"),
 ]
 
-N_WARMUP = 2
-N_ITERS = 5
+N_WARMUP = int(os.environ.get("BENCH_WARMUP", "1"))
+N_ITERS = int(os.environ.get("BENCH_ITERS", "3"))
 
 TOL_ATOL = 1e-4
 TOL_RTOL = 1e-2
