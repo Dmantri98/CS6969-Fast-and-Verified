@@ -141,10 +141,8 @@ def time_kernel(kernel, M: int, K: int, N: int):
     benchmark test (test_attention.py).
     """
     rng = np.random.default_rng(0)
-    lhsT = nl.static_cast(
-        rng.random((K, M)).astype(np.float32), nl.float32)
-    rhs = nl.static_cast(
-        rng.random((K, N)).astype(np.float32), nl.float32)
+    lhsT = rng.random((K, M)).astype(np.float32)
+    rhs = rng.random((K, N)).astype(np.float32)
     bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(_unwrap_nki_jit(kernel))
     bench_fn(lhsT, rhs)
     latency = bench_fn.benchmark_result.nc_latency
