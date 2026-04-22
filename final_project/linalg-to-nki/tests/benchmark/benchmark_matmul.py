@@ -48,8 +48,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import numpy as np
 import neuronxcc.nki.language as nl
-import neuronxcc.nki.typing as nt
 from neuronxcc.nki import benchmark
 
 
@@ -112,16 +112,19 @@ def load_module(py_path: Path, unique_name: str):
 def time_kernel(kernel, M: int, K: int, N: int):
     """Compile to NEFF once via nki.benchmark, warmup+iters on device.
 
-    Inputs are nki.typing.tensor shape descriptors, matching the AWS
-    matmul tutorial (https://awsdocs-neuron.readthedocs-hosted.com/en/
-    v2.26.1/nki/tutorials/matrix_multiplication.html). Passing real
-    numpy arrays worked for some kernels but broke the nki-samples refs
-    inside benchmark internals.
+    Inputs mirror the nki-samples attention benchmark pattern (see
+    test_attention.py): random numpy arrays cast via `nl.static_cast`.
+    Earlier attempts with raw numpy and with `nt.tensor[[...], dtype]`
+    descriptors both caused `nl.affine_range(M // TILE_M)` to return
+    None inside the ref kernels during benchmark's trace.
 
     Returns p50 device latency in seconds.
     """
-    lhsT = nt.tensor[[K, M], nl.float32]
-    rhs = nt.tensor[[K, N], nl.float32]
+    rng = np.random.default_rng(0)
+    lhsT = nl.static_cast(
+        rng.random((K, M)).astype(np.float32), nl.float32)
+    rhs = nl.static_cast(
+        rng.random((K, N)).astype(np.float32), nl.float32)
     bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
     bench_fn(lhsT, rhs)
     latency = bench_fn.benchmark_result.nc_latency
