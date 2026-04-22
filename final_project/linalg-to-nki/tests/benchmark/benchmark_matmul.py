@@ -53,6 +53,69 @@ from pathlib import Path
 
 import numpy as np
 from neuronxcc.nki import benchmark
+import neuronxcc.nki.language as nl
+import neuronxcc.nki.isa as ni
+
+
+# Inline reference kernels in the old neuronxcc.nki API (ni.nc_matmul
+# is positional and returns a PSUM tensor; see contributed/matmul.py).
+# These mirror the optimization levels of the nki-samples tutorial
+# kernels (`nki_matmul_tiled_`, `nki_matmul_hoist_load_`) but against
+# the API layer this venv actually supports.
+def ref_tiled(lhsT, rhs):
+    """Tile-by-tile matmul. Loads lhsT and rhs fresh for every (m, n)."""
+    K, M = lhsT.shape
+    K_, N = rhs.shape
+    assert K == K_
+    TILE_K = nl.tile_size.pmax               # 128
+    TILE_M = nl.tile_size.gemm_stationary_fmax  # 128
+    TILE_N = nl.tile_size.gemm_moving_fmax      # 512
+
+    Z = nl.ndarray((M, N), dtype=lhsT.dtype, buffer=nl.shared_hbm)
+    for m in nl.affine_range(M // TILE_M):
+        for n in nl.affine_range(N // TILE_N):
+            psum = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)
+            for k in nl.affine_range(K // TILE_K):
+                a = nl.load(lhsT[k * TILE_K:(k + 1) * TILE_K,
+                                 m * TILE_M:(m + 1) * TILE_M])
+                b = nl.load(rhs[k * TILE_K:(k + 1) * TILE_K,
+                                n * TILE_N:(n + 1) * TILE_N])
+                psum += ni.nc_matmul(a, b)
+            nl.store(Z[m * TILE_M:(m + 1) * TILE_M,
+                       n * TILE_N:(n + 1) * TILE_N], value=psum)
+    return Z
+
+
+def ref_hoist_load(lhsT, rhs):
+    """Hoist the lhsT load out of the N loop: for each m, each lhsT tile
+    is loaded once and reused across every n."""
+    K, M = lhsT.shape
+    K_, N = rhs.shape
+    assert K == K_
+    TILE_K = nl.tile_size.pmax
+    TILE_M = nl.tile_size.gemm_stationary_fmax
+    TILE_N = nl.tile_size.gemm_moving_fmax
+    NUM_K = K // TILE_K
+
+    Z = nl.ndarray((M, N), dtype=lhsT.dtype, buffer=nl.shared_hbm)
+    for m in nl.affine_range(M // TILE_M):
+        lhsT_sbuf = nl.ndarray(
+            (NUM_K, nl.par_dim(TILE_K), TILE_M),
+            dtype=lhsT.dtype, buffer=nl.sbuf)
+        for k in nl.affine_range(NUM_K):
+            lhsT_sbuf[k] = nl.load(
+                lhsT[k * TILE_K:(k + 1) * TILE_K,
+                     m * TILE_M:(m + 1) * TILE_M])
+
+        for n in nl.affine_range(N // TILE_N):
+            psum = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)
+            for k in nl.affine_range(NUM_K):
+                b = nl.load(rhs[k * TILE_K:(k + 1) * TILE_K,
+                                n * TILE_N:(n + 1) * TILE_N])
+                psum += ni.nc_matmul(lhsT_sbuf[k], b)
+            nl.store(Z[m * TILE_M:(m + 1) * TILE_M,
+                       n * TILE_N:(n + 1) * TILE_N], value=psum)
+    return Z
 
 
 HERE = Path(__file__).resolve().parent
@@ -63,20 +126,28 @@ DEFAULT_REF_PATH = Path("/home/ubuntu/nki-samples/contributed/matmul.py")
 REF_PATH = Path(os.environ.get("NKI_SAMPLES_PATH", str(DEFAULT_REF_PATH)))
 
 
-# (attr name in reference module, short label, (M, K, N) -> bool).
-# Predicate matches contributed/matmul.py's asserts with default
-# TILES_IN_BLOCK_{K,M,N} = (8, 4, 4) and
-# TILE_{K,M,N} = (pmax=128, gemm_stationary_fmax=128, gemm_moving_fmax=512):
-#   K % (8*128=1024), M % (4*128=512), N % (4*512=2048)
+# (callable, short label, (M, K, N) -> bool). For "fully_opt" the
+# callable is a string that is resolved against the loaded ref module;
+# for the inline kernels it is the function itself.
+#
+# Alignment predicates:
+#   tiled / hoist_load : M % TILE_M(128),  K % TILE_K(128),  N % TILE_N(512)
+#   fully_opt (contributed/matmul.py defaults 8/4/4):
+#                        M % 512,  K % 1024,  N % 2048
 REF_KERNELS = [
+    (ref_tiled, "tiled",
+     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
+    (ref_hoist_load, "hoist_load",
+     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
     ("matmul", "fully_opt",
      lambda M, K, N: M % 512 == 0 and K % 1024 == 0 and N % 2048 == 0),
 ]
 
 
-# Shapes aligned to the ref's tightest constraint:
-# M % 512, K % 1024, N % 2048.
+# First shape hits tiled/hoist_load only (fully_opt is n/a there);
+# remaining three satisfy all three refs.
 SHAPES = [
+    ( 512,  512,  512, "small"),
     (2048, 1024, 2048, "smallest all-refs"),
     (2048, 2048, 2048, "square 2k"),
     (4096, 2048, 2048, "mid"),
@@ -133,11 +204,14 @@ def main():
 
     emitted_fn = emitted_mod.matmul_kernel_nki
     refs = []
-    for attr, label, supports in REF_KERNELS:
-        fn = getattr(ref_mod, attr, None)
-        if fn is None:
-            print(f"  WARN  reference kernel '{attr}' not found; skipping")
-            continue
+    for entry, label, supports in REF_KERNELS:
+        if callable(entry):
+            fn = entry
+        else:
+            fn = getattr(ref_mod, entry, None)
+            if fn is None:
+                print(f"  WARN  reference kernel '{entry}' not found; skipping")
+                continue
         refs.append((label, fn, supports))
 
     print(f"=== matmul benchmark via nki.benchmark "
