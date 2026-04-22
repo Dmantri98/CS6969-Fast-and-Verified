@@ -49,8 +49,15 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-import neuronxcc.nki.language as nl
-from neuronxcc.nki import benchmark
+# Match the ref kernels' imports: the nki-samples matmul refs do
+# `import nki.language as nl` / `@nki.jit`. If we import benchmark
+# from `neuronxcc.nki` instead, `neuronxcc.nki.benchmark` sets up a
+# different trace context than the one `@nki.jit` (from top-level
+# `nki`) expects, and `nl.affine_range(...)` inside the ref kernel
+# body returns None at re-trace time. Importing both from the same
+# top-level `nki` package keeps the trace context consistent.
+import nki.language as nl
+from nki import benchmark
 
 
 HERE = Path(__file__).resolve().parent
@@ -173,7 +180,6 @@ def main():
             continue
         refs.append((label, fn, supports))
 
-    verbose = os.environ.get("BENCH_VERBOSE") == "1"
     print(f"=== matmul benchmark via nki.benchmark "
           f"(warmup={N_WARMUP}, iters={N_ITERS}) ===")
     print(f"    emitted: {EMITTED_PATH}")
