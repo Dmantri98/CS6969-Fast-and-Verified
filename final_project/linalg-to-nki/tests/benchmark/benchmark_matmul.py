@@ -43,7 +43,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from neuronxcc.nki import benchmark, baremetal
+from neuronxcc.nki import benchmark
 
 
 HERE = Path(__file__).resolve().parent
@@ -106,9 +106,15 @@ def load_module(py_path: Path, unique_name: str):
 
 
 def run_correctness(kernel, lhsT_np, rhs_np, ref_out):
-    """Run via nki.baremetal once to get a real output for correctness."""
-    bare_fn = baremetal()(kernel)
-    out = bare_fn(lhsT_np, rhs_np)
+    """Run the @nki.jit kernel directly with numpy; returns numpy output.
+
+    We don't wrap with nki.baremetal here because the ref kernels are
+    already @nki.jit decorated and double-wrapping (baremetal on top of
+    jit) silently returns None for some of them (see nki-samples
+    attention tests for the same pattern -- they call @nki.jit kernels
+    directly with numpy for correctness).
+    """
+    out = kernel(lhsT_np, rhs_np)
     return np.allclose(out, ref_out, atol=TOL_ATOL, rtol=TOL_RTOL)
 
 
