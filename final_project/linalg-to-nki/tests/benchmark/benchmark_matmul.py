@@ -43,6 +43,9 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+import torch
+import torch_xla
+from torch_xla.core import xla_model as xm
 from neuronxcc.nki import benchmark
 
 
@@ -105,17 +108,37 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
-def run_correctness(kernel, lhsT_np, rhs_np, ref_out):
-    """Run the @nki.jit kernel directly with numpy; returns numpy output.
+def _sync():
+    if hasattr(torch_xla, "sync"):
+        torch_xla.sync()
+    else:
+        xm.mark_step()
+    xm.wait_device_ops()
 
-    We don't wrap with nki.baremetal here because the ref kernels are
-    already @nki.jit decorated and double-wrapping (baremetal on top of
-    jit) silently returns None for some of them (see nki-samples
-    attention tests for the same pattern -- they call @nki.jit kernels
-    directly with numpy for correctness).
+
+def _xla_device():
+    if hasattr(torch_xla, "device"):
+        return torch_xla.device()
+    return xm.xla_device()
+
+
+def run_correctness(kernel, lhsT_np, rhs_np, ref_out_np):
+    """Call the @nki.jit kernel once via torch_xla to get a real output.
+
+    @nki.jit on numpy inputs attempts a baremetal fallback that is not
+    supported in this environment ("Did not find torch or jax, fallback
+    nki.baremetal not supported"). So we route the correctness probe
+    through torch_xla: tensors on the XLA device -> kernel -> sync ->
+    back to numpy. This is one call per (shape, kernel) and is not on
+    the timing path.
     """
-    out = kernel(lhsT_np, rhs_np)
-    return np.allclose(out, ref_out, atol=TOL_ATOL, rtol=TOL_RTOL)
+    device = _xla_device()
+    lhsT = torch.from_numpy(lhsT_np).to(device)
+    rhs = torch.from_numpy(rhs_np).to(device)
+    out = kernel(lhsT, rhs)
+    _sync()
+    out_np = out.cpu().numpy()
+    return np.allclose(out_np, ref_out_np, atol=TOL_ATOL, rtol=TOL_RTOL)
 
 
 def time_kernel(kernel, lhsT_np, rhs_np):
