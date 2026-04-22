@@ -1,6 +1,6 @@
 """
-Benchmark the emitted matmul kernel against the AWS nki-samples
-reference kernels on a shared set of shapes.
+Benchmark the emitted matmul kernel against an AWS nki-samples
+reference on a shared set of shapes.
 
 We use `neuronxcc.nki.benchmark`, which compiles each kernel to a NEFF
 once and times pure on-device execute. This sidesteps torch_xla tracing
@@ -13,30 +13,33 @@ Correctness is NOT checked here: nki.benchmark takes over the Neuron
 cores, so we can't also run a torch_xla probe in the same process
 (NRT errors out with "Logical Neuron Core(s) not available"). The
 emitted kernel's correctness is covered by tests/ (torch_xla against
-torch.matmul); the refs are AWS-authored and assumed correct.
+torch.matmul); the ref is AWS-authored and assumed correct.
+
+Reference choice
+----------------
+The tutorial kernels under nki-samples/src/.../matrix_multiplication/
+are written against a newer `nki.*` top-level API (nc_matmul with
+dst=/stationary=/moving= kwargs, Python-list tile storage, memset with
+different signature). That API is incompatible with the older
+`neuronxcc.nki.*` that `neuronxcc.nki.benchmark` drives in this venv.
+
+Instead we use nki-samples/contributed/matmul.py, which is written in
+the `neuronxcc.nki` API (positional `ni.nc_matmul` that returns PSUM,
+`nl.loop_reduce`, etc.) and is the sophisticated block-tiled variant --
+the equivalent of the tutorial's `fully_optimized_`.
 
 Loaded kernels
 --------------
-  emitted    : generated/matmul_kernel.py  (our pipeline output)
-  tiled      : nki_matmul_tiled_
-  hoist_load : nki_matmul_hoist_load_
-  block_free : nki_matmul_block_free_dimension_
-  fully_opt  : nki_matmul_fully_optimized_  (default TILES_IN_BLOCK)
-
-nki_matmul_basic_ is intentionally skipped: it is hardcoded to a
-single 64x128x512 matmul and is not comparable across shapes.
-
-Each reference kernel has its own alignment constraints; for each
-shape we only run the kernels whose constraints are satisfied. The
-emitted kernel masks at every load/store and runs on every shape.
+  emitted   : generated/matmul_kernel.py  (our pipeline output)
+  fully_opt : contributed/matmul.py `matmul`  (default TILES_IN_BLOCK)
 
 Reference file path
 -------------------
 Default:
-  /home/ubuntu/nki-samples/src/nki_samples/tutorials/matrix_multiplication/matrix_multiplication_nki_kernels.py
+  /home/ubuntu/nki-samples/contributed/matmul.py
 
 Override:
-  NKI_SAMPLES_PATH=/abs/path/to/matrix_multiplication_nki_kernels.py \
+  NKI_SAMPLES_PATH=/abs/path/to/matmul.py \
       python tests/benchmark/benchmark_matmul.py
 
 Run (on Trainium):
@@ -49,63 +52,32 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-# The nki-samples matmul refs import `nki.language` / `@nki.jit` from
-# the top-level `nki` package, but that package's `benchmark` is a
-# stub (raises NotImplementedError). The real implementation lives in
-# `neuronxcc.nki.benchmark`. Mixing the two produces a trace-context
-# mismatch: `@nki.jit` installs `nki.language`'s trace state, but
-# `neuronxcc.nki.benchmark` re-traces against `neuronxcc.nki.language`'s
-# state, so `nl.affine_range(...)` returns None inside the ref body.
-#
-# Fix: alias `sys.modules['nki*']` to the `neuronxcc.nki*` modules
-# before loading the ref file, so the ref kernels' `import nki...` /
-# `@nki.jit` bind to the same module instances benchmark activates.
-import neuronxcc.nki
-import neuronxcc.nki.isa
-import neuronxcc.nki.language
 from neuronxcc.nki import benchmark
-sys.modules["nki"] = neuronxcc.nki
-sys.modules["nki.language"] = neuronxcc.nki.language
-sys.modules["nki.isa"] = neuronxcc.nki.isa
 
 
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent.parent
 EMITTED_PATH = PROJECT_ROOT / "generated" / "matmul_kernel.py"
 
-DEFAULT_REF_PATH = Path(
-    "/home/ubuntu/nki-samples/src/nki_samples/tutorials/"
-    "matrix_multiplication/matrix_multiplication_nki_kernels.py"
-)
+DEFAULT_REF_PATH = Path("/home/ubuntu/nki-samples/contributed/matmul.py")
 REF_PATH = Path(os.environ.get("NKI_SAMPLES_PATH", str(DEFAULT_REF_PATH)))
 
 
 # (attr name in reference module, short label, (M, K, N) -> bool).
-# Predicates match the asserts at the top of each kernel in
-# nki-samples/src/nki_samples/tutorials/matrix_multiplication/
-# matrix_multiplication_nki_kernels.py:
-#   tiled            lines 96-98   : M%128,   N%512,  K%128
-#   hoist_load       lines 164-166 : M%128,   N%512,  K%128
-#   block_free_dim   lines 251-252 : M%256,   N%1024  (K%128 implicit)
-#   fully_optimized  lines 365-367 : M%2048,  N%1024, K%1024  (defaults)
+# Predicate matches contributed/matmul.py's asserts with default
+# TILES_IN_BLOCK_{K,M,N} = (8, 4, 4) and
+# TILE_{K,M,N} = (pmax=128, gemm_stationary_fmax=128, gemm_moving_fmax=512):
+#   K % (8*128=1024), M % (4*128=512), N % (4*512=2048)
 REF_KERNELS = [
-    ("nki_matmul_tiled_", "tiled",
-     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
-    ("nki_matmul_hoist_load_", "hoist_load",
-     lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
-    ("nki_matmul_block_free_dimension_", "block_free",
-     lambda M, K, N: M % 256 == 0 and K % 128 == 0 and N % 1024 == 0),
-    ("nki_matmul_fully_optimized_", "fully_opt",
-     lambda M, K, N: M % 2048 == 0 and K % 1024 == 0 and N % 1024 == 0),
+    ("matmul", "fully_opt",
+     lambda M, K, N: M % 512 == 0 and K % 1024 == 0 and N % 2048 == 0),
 ]
 
 
-# Shapes aligned to every reference kernel's tightest constraint
-# (fully_optimized with defaults): M % 2048, K % 1024, N % 1024. That
-# way all four references participate in every row -- the emitted
-# kernel's shape-generality is discussed in the report.
+# Shapes aligned to the ref's tightest constraint:
+# M % 512, K % 1024, N % 2048.
 SHAPES = [
-    (2048, 1024, 1024, "smallest all-refs"),
+    (2048, 1024, 2048, "smallest all-refs"),
     (2048, 2048, 2048, "square 2k"),
     (4096, 2048, 2048, "mid"),
     (4096, 4096, 4096, "square 4k"),
@@ -125,34 +97,15 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
-def _unwrap_nki_jit(kernel):
-    """Return the raw Python function inside a @nki.jit TraceKernel.
-
-    nki.benchmark wrapped on top of @nki.jit re-traces the function and
-    the double-trace path breaks inside TraceKernel.expand_kernel_with_ctx
-    for the nki-samples matmul refs (affine_range returns None). The
-    contributed/matmul.py example applies @nki.benchmark to a raw function,
-    not a pre-jit'd one; mirror that by unwrapping.
-    """
-    for attr in ("__wrapped__", "func", "py_func", "kernel_fn", "fn",
-                 "_kernel", "_func"):
-        inner = getattr(kernel, attr, None)
-        if callable(inner) and inner is not kernel:
-            return inner
-    return kernel
-
-
 def time_kernel(kernel, M: int, K: int, N: int):
     """Compile to NEFF once via nki.benchmark, warmup+iters on device.
 
-    Returns p50 device latency in seconds. Inputs use the
-    nl.static_cast(numpy, dtype) pattern from the nki-samples attention
-    benchmark test (test_attention.py).
+    Returns p50 device latency in seconds.
     """
     rng = np.random.default_rng(0)
     lhsT = rng.random((K, M)).astype(np.float32)
     rhs = rng.random((K, N)).astype(np.float32)
-    bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(_unwrap_nki_jit(kernel))
+    bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
     bench_fn(lhsT, rhs)
     latency = bench_fn.benchmark_result.nc_latency
     p50_us = latency.get_latency_percentile(50)
@@ -172,7 +125,7 @@ def main():
         raise SystemExit(
             f"reference file not found: {REF_PATH}\n"
             f"set NKI_SAMPLES_PATH to the absolute path of "
-            f"matrix_multiplication_nki_kernels.py"
+            f"nki-samples/contributed/matmul.py"
         )
 
     emitted_mod = load_module(EMITTED_PATH, "emitted_matmul_kernel")
