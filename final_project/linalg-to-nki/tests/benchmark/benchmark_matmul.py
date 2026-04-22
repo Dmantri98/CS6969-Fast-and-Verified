@@ -49,15 +49,24 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-# Match the ref kernels' imports: the nki-samples matmul refs do
-# `import nki.language as nl` / `@nki.jit`. If we import benchmark
-# from `neuronxcc.nki` instead, `neuronxcc.nki.benchmark` sets up a
-# different trace context than the one `@nki.jit` (from top-level
-# `nki`) expects, and `nl.affine_range(...)` inside the ref kernel
-# body returns None at re-trace time. Importing both from the same
-# top-level `nki` package keeps the trace context consistent.
-import nki.language as nl
-from nki import benchmark
+# The nki-samples matmul refs import `nki.language` / `@nki.jit` from
+# the top-level `nki` package, but that package's `benchmark` is a
+# stub (raises NotImplementedError). The real implementation lives in
+# `neuronxcc.nki.benchmark`. Mixing the two produces a trace-context
+# mismatch: `@nki.jit` installs `nki.language`'s trace state, but
+# `neuronxcc.nki.benchmark` re-traces against `neuronxcc.nki.language`'s
+# state, so `nl.affine_range(...)` returns None inside the ref body.
+#
+# Fix: alias `sys.modules['nki*']` to the `neuronxcc.nki*` modules
+# before loading the ref file, so the ref kernels' `import nki...` /
+# `@nki.jit` bind to the same module instances benchmark activates.
+import neuronxcc.nki
+import neuronxcc.nki.isa
+import neuronxcc.nki.language
+from neuronxcc.nki import benchmark
+sys.modules["nki"] = neuronxcc.nki
+sys.modules["nki.language"] = neuronxcc.nki.language
+sys.modules["nki.isa"] = neuronxcc.nki.isa
 
 
 HERE = Path(__file__).resolve().parent
