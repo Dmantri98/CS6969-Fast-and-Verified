@@ -198,9 +198,8 @@ def main():
         rows.append((label, cells))
         for (klabel, e, tb) in errors:
             print(f"      {klabel:>10s}: {type(e).__name__}: {e}")
-            if verbose:
-                for line in tb.splitlines():
-                    print(f"        {line}")
+            for line in tb.splitlines():
+                print(f"        {line}")
 
     # Clean summary table, reprinted at the end so it's not buried in
     # the Neuron compiler's per-kernel log output.
