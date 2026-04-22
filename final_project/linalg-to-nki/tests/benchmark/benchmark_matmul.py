@@ -2,6 +2,13 @@
 Benchmark the emitted matmul kernel against the AWS nki-samples
 reference kernels on a shared set of shapes.
 
+We use `neuronxcc.nki.benchmark`, which compiles each kernel to a NEFF
+once and times pure on-device execute. This sidesteps torch_xla tracing
+/ HLO-caching issues (the nki-samples kernels produce a fresh HLO hash
+on every call through torch_xla, so every torch_xla call paid a full
+neuronxcc compile -- what we were measuring there was compile time, not
+device time).
+
 Loaded kernels
 --------------
   emitted    : generated/matmul_kernel.py  (our pipeline output)
@@ -15,8 +22,7 @@ single 64x128x512 matmul and is not comparable across shapes.
 
 Each reference kernel has its own alignment constraints; for each
 shape we only run the kernels whose constraints are satisfied. The
-emitted kernel masks at every load/store and runs on every shape we
-include.
+emitted kernel masks at every load/store and runs on every shape.
 
 Reference file path
 -------------------
@@ -27,32 +33,19 @@ Override:
   NKI_SAMPLES_PATH=/abs/path/to/matrix_multiplication_nki_kernels.py \
       python tests/benchmark/benchmark_matmul.py
 
-Methodology
------------
-Each iteration is traced and synced independently (sync per call) so the
-neuronxcc disk cache is consulted once per call, matching the warmup
-graph shape. For the emitted kernel this means warmup primes the cache
-and timed iters measure pure device execute. The nki-samples refs stamp
-random temp paths into their generated AST, so each call re-compiles
-regardless -- that cache-miss cost is part of what the benchmark is
-meant to expose (and is what a user would experience on a real workload
-with varying shapes). We report min across N_ITERS to suppress host
-noise. Correctness is checked with `torch.allclose` against
-`torch.matmul` using the same tolerance as the existing suites.
-
 Run (on Trainium):
     python tests/benchmark/benchmark_matmul.py
 """
 import importlib.util
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 
-import torch
-import torch_xla
-from torch_xla.core import xla_model as xm
+import numpy as np
+import neuronxcc.nki as nki
+import neuronxcc.nki.language as nl
+from neuronxcc.nki import benchmark
 
 
 HERE = Path(__file__).resolve().parent
@@ -67,15 +60,13 @@ REF_PATH = Path(os.environ.get("NKI_SAMPLES_PATH", str(DEFAULT_REF_PATH)))
 
 
 # (attr name in reference module, short label, (M, K, N) -> bool).
-# The predicates match the explicit asserts at the top of each kernel
-# in nki-samples/src/nki_samples/tutorials/matrix_multiplication/
+# Predicates match the asserts at the top of each kernel in
+# nki-samples/src/nki_samples/tutorials/matrix_multiplication/
 # matrix_multiplication_nki_kernels.py:
 #   tiled            lines 96-98   : M%128,   N%512,  K%128
 #   hoist_load       lines 164-166 : M%128,   N%512,  K%128
 #   block_free_dim   lines 251-252 : M%256,   N%1024  (K%128 implicit)
 #   fully_optimized  lines 365-367 : M%2048,  N%1024, K%1024  (defaults)
-# Calling a reference outside its predicate raises AssertionError; we
-# emit "n/a" in the table instead.
 REF_KERNELS = [
     ("nki_matmul_tiled_", "tiled",
      lambda M, K, N: M % 128 == 0 and K % 128 == 0 and N % 512 == 0),
@@ -90,8 +81,8 @@ REF_KERNELS = [
 
 # Shapes aligned to every reference kernel's tightest constraint
 # (fully_optimized with defaults): M % 2048, K % 1024, N % 1024. That
-# way all four references participate in every row -- we talk about
-# the emitted kernel's shape-generality in the report, not here.
+# way all four references participate in every row -- the emitted
+# kernel's shape-generality is discussed in the report.
 SHAPES = [
     (2048, 1024, 1024, "smallest all-refs"),
     (2048, 2048, 2048, "square 2k"),
@@ -99,7 +90,7 @@ SHAPES = [
     (4096, 4096, 4096, "square 4k"),
 ]
 
-N_WARMUP = int(os.environ.get("BENCH_WARMUP", "1"))
+N_WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
 N_ITERS = int(os.environ.get("BENCH_ITERS", "10"))
 
 TOL_ATOL = 1e-4
@@ -116,44 +107,20 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
-def sync():
-    # Prefer the new torch_xla.sync API if present; fall back to mark_step.
-    if hasattr(torch_xla, "sync"):
-        torch_xla.sync()
-    else:
-        xm.mark_step()
-    xm.wait_device_ops()
+def time_kernel(kernel, lhsT_np, rhs_np):
+    """Compile to NEFF once via nki.benchmark, run warmup+iters on device.
+
+    Returns (p50_seconds, output_numpy).
+    """
+    bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
+    out = bench_fn(lhsT_np, rhs_np)
+    latency = bench_fn.benchmark_result.nc_latency
+    p50_us = latency.get_latency_percentile(50)
+    return p50_us * 1e-6, out
 
 
-def get_device():
-    if hasattr(torch_xla, "device"):
-        return torch_xla.device()
-    return xm.xla_device()
-
-
-def time_kernel(kernel, lhsT, rhs):
-    # Sync per call so each iteration is its own traced graph (same HLO
-    # shape as warmup). For the emitted kernel that means warmup primes
-    # the neuronxcc cache and every timed iter is a pure exec. For the
-    # nki-samples refs, each call still re-compiles because their tooling
-    # stamps random temp paths into the generated AST -- that cache-miss
-    # is part of what we want the benchmark to expose. We report min
-    # across iters to suppress host-side noise.
-    for _ in range(N_WARMUP):
-        _ = kernel(lhsT, rhs)
-        sync()
-    times = []
-    out = None
-    for _ in range(N_ITERS):
-        start = time.perf_counter()
-        out = kernel(lhsT, rhs)
-        sync()
-        times.append(time.perf_counter() - start)
-    return min(times), out
-
-
-def is_close(out, ref):
-    return torch.allclose(out, ref, atol=TOL_ATOL, rtol=TOL_RTOL)
+def is_close(out_np, ref_np):
+    return np.allclose(out_np, ref_np, atol=TOL_ATOL, rtol=TOL_RTOL)
 
 
 def fmt_cell(t_s: float, ok: bool) -> str:
@@ -185,9 +152,8 @@ def main():
             continue
         refs.append((label, fn, supports))
 
-    device = get_device()
     verbose = os.environ.get("BENCH_VERBOSE") == "1"
-    print(f"=== matmul benchmark on {device} "
+    print(f"=== matmul benchmark via nki.benchmark "
           f"(warmup={N_WARMUP}, iters={N_ITERS}) ===")
     print(f"    emitted: {EMITTED_PATH}")
     print(f"    refs   : {REF_PATH}\n")
@@ -197,21 +163,22 @@ def main():
     print(head)
     print("  " + "-" * (len(head) - 2))
 
-    rows = []  # [(label, [cell_str, ...]), ...] for the clean summary.
+    rows = []
 
     for (M, K, N, tag) in SHAPES:
-        lhs = torch.rand((M, K), dtype=torch.float32, device=device)
-        rhs = torch.rand((K, N), dtype=torch.float32, device=device)
-        ref_out = torch.matmul(lhs, rhs)
-        sync()
+        rng = np.random.default_rng(0)
+        lhs_np = rng.random((M, K), dtype=np.float32)
+        rhs_np = rng.random((K, N), dtype=np.float32)
+        lhsT_np = np.ascontiguousarray(lhs_np.T)
+        ref_out_np = lhs_np @ rhs_np
 
         shape_str = f"({M:>4d} x {K:>4d} x {N:>4d})"
         cells = []
         errors = []
 
         try:
-            t, out = time_kernel(emitted_fn, lhs.T, rhs)
-            cells.append(fmt_cell(t, is_close(out, ref_out)))
+            t, out = time_kernel(emitted_fn, lhsT_np, rhs_np)
+            cells.append(fmt_cell(t, is_close(out, ref_out_np)))
         except Exception as e:
             cells.append(f"{'ERR':>10s}")
             errors.append(("emitted", e, traceback.format_exc()))
@@ -221,8 +188,8 @@ def main():
                 cells.append(f"{'n/a':>10s}")
                 continue
             try:
-                t, out = time_kernel(fn, lhs.T, rhs)
-                cells.append(fmt_cell(t, is_close(out, ref_out)))
+                t, out = time_kernel(fn, lhsT_np, rhs_np)
+                cells.append(fmt_cell(t, is_close(out, ref_out_np)))
             except Exception as e:
                 cells.append(f"{'ERR':>10s}")
                 errors.append((rlabel, e, traceback.format_exc()))
@@ -239,13 +206,13 @@ def main():
     # Clean summary table, reprinted at the end so it's not buried in
     # the Neuron compiler's per-kernel log output.
     print("\n" + "=" * (len(head) - 2))
-    print("SUMMARY (ms/iter)")
+    print("SUMMARY (ms/iter, p50 device latency)")
     print("=" * (len(head) - 2))
     print(head)
     print("  " + "-" * (len(head) - 2))
     for (label, cells) in rows:
         print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
-    print("\n(! = diverges from torch.matmul within "
+    print("\n(! = diverges from numpy matmul within "
           f"atol={TOL_ATOL}, rtol={TOL_RTOL})")
 
 
