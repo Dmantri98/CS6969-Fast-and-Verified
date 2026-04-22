@@ -109,23 +109,36 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
+def _unwrap_nki_jit(kernel):
+    """Return the raw Python function inside a @nki.jit TraceKernel.
+
+    nki.benchmark wrapped on top of @nki.jit re-traces the function and
+    the double-trace path breaks inside TraceKernel.expand_kernel_with_ctx
+    for the nki-samples matmul refs (affine_range returns None). The
+    contributed/matmul.py example applies @nki.benchmark to a raw function,
+    not a pre-jit'd one; mirror that by unwrapping.
+    """
+    for attr in ("__wrapped__", "func", "py_func", "kernel_fn", "fn",
+                 "_kernel", "_func"):
+        inner = getattr(kernel, attr, None)
+        if callable(inner) and inner is not kernel:
+            return inner
+    return kernel
+
+
 def time_kernel(kernel, M: int, K: int, N: int):
     """Compile to NEFF once via nki.benchmark, warmup+iters on device.
 
-    Inputs mirror the nki-samples attention benchmark pattern (see
-    test_attention.py): random numpy arrays cast via `nl.static_cast`.
-    Earlier attempts with raw numpy and with `nt.tensor[[...], dtype]`
-    descriptors both caused `nl.affine_range(M // TILE_M)` to return
-    None inside the ref kernels during benchmark's trace.
-
-    Returns p50 device latency in seconds.
+    Returns p50 device latency in seconds. Inputs use the
+    nl.static_cast(numpy, dtype) pattern from the nki-samples attention
+    benchmark test (test_attention.py).
     """
     rng = np.random.default_rng(0)
     lhsT = nl.static_cast(
         rng.random((K, M)).astype(np.float32), nl.float32)
     rhs = nl.static_cast(
         rng.random((K, N)).astype(np.float32), nl.float32)
-    bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
+    bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(_unwrap_nki_jit(kernel))
     bench_fn(lhsT, rhs)
     latency = bench_fn.benchmark_result.nc_latency
     p50_us = latency.get_latency_percentile(50)
