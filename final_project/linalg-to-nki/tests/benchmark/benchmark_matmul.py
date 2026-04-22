@@ -9,6 +9,12 @@ on every call through torch_xla, so every torch_xla call paid a full
 neuronxcc compile -- what we were measuring there was compile time, not
 device time).
 
+Correctness is NOT checked here: nki.benchmark takes over the Neuron
+cores, so we can't also run a torch_xla probe in the same process
+(NRT errors out with "Logical Neuron Core(s) not available"). The
+emitted kernel's correctness is covered by tests/ (torch_xla against
+torch.matmul); the refs are AWS-authored and assumed correct.
+
 Loaded kernels
 --------------
   emitted    : generated/matmul_kernel.py  (our pipeline output)
@@ -43,9 +49,6 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch_xla
-from torch_xla.core import xla_model as xm
 from neuronxcc.nki import benchmark
 
 
@@ -94,9 +97,6 @@ SHAPES = [
 N_WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
 N_ITERS = int(os.environ.get("BENCH_ITERS", "10"))
 
-TOL_ATOL = 1e-4
-TOL_RTOL = 1e-2
-
 
 def load_module(py_path: Path, unique_name: str):
     if not py_path.exists():
@@ -106,39 +106,6 @@ def load_module(py_path: Path, unique_name: str):
     sys.modules[unique_name] = mod
     spec.loader.exec_module(mod)
     return mod
-
-
-def _sync():
-    if hasattr(torch_xla, "sync"):
-        torch_xla.sync()
-    else:
-        xm.mark_step()
-    xm.wait_device_ops()
-
-
-def _xla_device():
-    if hasattr(torch_xla, "device"):
-        return torch_xla.device()
-    return xm.xla_device()
-
-
-def run_correctness(kernel, lhsT_np, rhs_np, ref_out_np):
-    """Call the @nki.jit kernel once via torch_xla to get a real output.
-
-    @nki.jit on numpy inputs attempts a baremetal fallback that is not
-    supported in this environment ("Did not find torch or jax, fallback
-    nki.baremetal not supported"). So we route the correctness probe
-    through torch_xla: tensors on the XLA device -> kernel -> sync ->
-    back to numpy. This is one call per (shape, kernel) and is not on
-    the timing path.
-    """
-    device = _xla_device()
-    lhsT = torch.from_numpy(lhsT_np).to(device)
-    rhs = torch.from_numpy(rhs_np).to(device)
-    out = kernel(lhsT, rhs)
-    _sync()
-    out_np = out.cpu().numpy()
-    return np.allclose(out_np, ref_out_np, atol=TOL_ATOL, rtol=TOL_RTOL)
 
 
 def time_kernel(kernel, lhsT_np, rhs_np):
@@ -156,9 +123,8 @@ def time_kernel(kernel, lhsT_np, rhs_np):
     return p50_us * 1e-6
 
 
-def fmt_cell(t_s: float, ok: bool) -> str:
-    mark = " " if ok else "!"
-    return f"{t_s*1e3:>8.2f}ms{mark}"
+def fmt_cell(t_s: float) -> str:
+    return f"{t_s*1e3:>8.2f}ms"
 
 
 def main():
@@ -203,16 +169,14 @@ def main():
         lhs_np = rng.random((M, K), dtype=np.float32)
         rhs_np = rng.random((K, N), dtype=np.float32)
         lhsT_np = np.ascontiguousarray(lhs_np.T)
-        ref_out_np = lhs_np @ rhs_np
 
         shape_str = f"({M:>4d} x {K:>4d} x {N:>4d})"
         cells = []
         errors = []
 
         try:
-            ok = run_correctness(emitted_fn, lhsT_np, rhs_np, ref_out_np)
             t = time_kernel(emitted_fn, lhsT_np, rhs_np)
-            cells.append(fmt_cell(t, ok))
+            cells.append(fmt_cell(t))
         except Exception as e:
             cells.append(f"{'ERR':>10s}")
             errors.append(("emitted", e, traceback.format_exc()))
@@ -222,9 +186,8 @@ def main():
                 cells.append(f"{'n/a':>10s}")
                 continue
             try:
-                ok = run_correctness(fn, lhsT_np, rhs_np, ref_out_np)
                 t = time_kernel(fn, lhsT_np, rhs_np)
-                cells.append(fmt_cell(t, ok))
+                cells.append(fmt_cell(t))
             except Exception as e:
                 cells.append(f"{'ERR':>10s}")
                 errors.append((rlabel, e, traceback.format_exc()))
@@ -247,8 +210,8 @@ def main():
     print("  " + "-" * (len(head) - 2))
     for (label, cells) in rows:
         print(f"  {label:<28s}  " + "  ".join(f"{c:>10s}" for c in cells))
-    print("\n(! = diverges from numpy matmul within "
-          f"atol={TOL_ATOL}, rtol={TOL_RTOL})")
+    print("\n(correctness for the emitted kernel is covered by the "
+          "torch_xla suites in tests/; this file measures device time only)")
 
 
 if __name__ == "__main__":
