@@ -43,9 +43,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-from neuronxcc.nki import benchmark
+from neuronxcc.nki import benchmark, baremetal
 
 
 HERE = Path(__file__).resolve().parent
@@ -107,20 +105,26 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
-def time_kernel(kernel, lhsT_np, rhs_np):
-    """Compile to NEFF once via nki.benchmark, run warmup+iters on device.
+def run_correctness(kernel, lhsT_np, rhs_np, ref_out):
+    """Run via nki.baremetal once to get a real output for correctness."""
+    bare_fn = baremetal()(kernel)
+    out = bare_fn(lhsT_np, rhs_np)
+    return np.allclose(out, ref_out, atol=TOL_ATOL, rtol=TOL_RTOL)
 
-    Returns (p50_seconds, output_numpy).
+
+def time_kernel(kernel, lhsT_np, rhs_np):
+    """Compile to NEFF once via nki.benchmark, warmup+iters on device.
+
+    Returns p50 device latency in seconds. Output is not returned --
+    nki.benchmark does not reliably expose the tensor (see the
+    nki-samples contributed/matmul.py pattern: baremetal for correctness,
+    benchmark for timing).
     """
     bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
-    out = bench_fn(lhsT_np, rhs_np)
+    bench_fn(lhsT_np, rhs_np)
     latency = bench_fn.benchmark_result.nc_latency
     p50_us = latency.get_latency_percentile(50)
-    return p50_us * 1e-6, out
-
-
-def is_close(out_np, ref_np):
-    return np.allclose(out_np, ref_np, atol=TOL_ATOL, rtol=TOL_RTOL)
+    return p50_us * 1e-6
 
 
 def fmt_cell(t_s: float, ok: bool) -> str:
@@ -177,8 +181,9 @@ def main():
         errors = []
 
         try:
-            t, out = time_kernel(emitted_fn, lhsT_np, rhs_np)
-            cells.append(fmt_cell(t, is_close(out, ref_out_np)))
+            ok = run_correctness(emitted_fn, lhsT_np, rhs_np, ref_out_np)
+            t = time_kernel(emitted_fn, lhsT_np, rhs_np)
+            cells.append(fmt_cell(t, ok))
         except Exception as e:
             cells.append(f"{'ERR':>10s}")
             errors.append(("emitted", e, traceback.format_exc()))
@@ -188,8 +193,9 @@ def main():
                 cells.append(f"{'n/a':>10s}")
                 continue
             try:
-                t, out = time_kernel(fn, lhsT_np, rhs_np)
-                cells.append(fmt_cell(t, is_close(out, ref_out_np)))
+                ok = run_correctness(fn, lhsT_np, rhs_np, ref_out_np)
+                t = time_kernel(fn, lhsT_np, rhs_np)
+                cells.append(fmt_cell(t, ok))
             except Exception as e:
                 cells.append(f"{'ERR':>10s}")
                 errors.append((rlabel, e, traceback.format_exc()))
