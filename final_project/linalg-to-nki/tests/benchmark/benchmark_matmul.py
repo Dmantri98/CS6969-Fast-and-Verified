@@ -48,7 +48,8 @@ import sys
 import traceback
 from pathlib import Path
 
-import numpy as np
+import neuronxcc.nki.language as nl
+import neuronxcc.nki.typing as nt
 from neuronxcc.nki import benchmark
 
 
@@ -108,16 +109,21 @@ def load_module(py_path: Path, unique_name: str):
     return mod
 
 
-def time_kernel(kernel, lhsT_np, rhs_np):
+def time_kernel(kernel, M: int, K: int, N: int):
     """Compile to NEFF once via nki.benchmark, warmup+iters on device.
 
-    Returns p50 device latency in seconds. Output is not returned --
-    nki.benchmark does not reliably expose the tensor (see the
-    nki-samples contributed/matmul.py pattern: baremetal for correctness,
-    benchmark for timing).
+    Inputs are nki.typing.tensor shape descriptors, matching the AWS
+    matmul tutorial (https://awsdocs-neuron.readthedocs-hosted.com/en/
+    v2.26.1/nki/tutorials/matrix_multiplication.html). Passing real
+    numpy arrays worked for some kernels but broke the nki-samples refs
+    inside benchmark internals.
+
+    Returns p50 device latency in seconds.
     """
+    lhsT = nt.tensor[[K, M], nl.float32]
+    rhs = nt.tensor[[K, N], nl.float32]
     bench_fn = benchmark(warmup=N_WARMUP, iters=N_ITERS)(kernel)
-    bench_fn(lhsT_np, rhs_np)
+    bench_fn(lhsT, rhs)
     latency = bench_fn.benchmark_result.nc_latency
     p50_us = latency.get_latency_percentile(50)
     return p50_us * 1e-6
@@ -165,17 +171,12 @@ def main():
     rows = []
 
     for (M, K, N, tag) in SHAPES:
-        rng = np.random.default_rng(0)
-        lhs_np = rng.random((M, K), dtype=np.float32)
-        rhs_np = rng.random((K, N), dtype=np.float32)
-        lhsT_np = np.ascontiguousarray(lhs_np.T)
-
         shape_str = f"({M:>4d} x {K:>4d} x {N:>4d})"
         cells = []
         errors = []
 
         try:
-            t = time_kernel(emitted_fn, lhsT_np, rhs_np)
+            t = time_kernel(emitted_fn, M, K, N)
             cells.append(fmt_cell(t))
         except Exception as e:
             cells.append(f"{'ERR':>10s}")
@@ -186,7 +187,7 @@ def main():
                 cells.append(f"{'n/a':>10s}")
                 continue
             try:
-                t = time_kernel(fn, lhsT_np, rhs_np)
+                t = time_kernel(fn, M, K, N)
                 cells.append(fmt_cell(t))
             except Exception as e:
                 cells.append(f"{'ERR':>10s}")
