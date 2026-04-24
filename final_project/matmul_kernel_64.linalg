@@ -1,0 +1,190 @@
+// =============================================================================
+// Tiled Matrix Multiplication Kernel (Linalg Dialect)
+// Lowered from Triton via triton-shared: C = A @ B
+//
+// Arguments (mapped from Triton kernel):
+//   %arg0  = a_ptr       : memref<*xf32>   -- pointer to matrix A
+//   %arg1  = b_ptr       : memref<*xf32>   -- pointer to matrix B
+//   %arg2  = c_ptr       : memref<*xf32>   -- pointer to output matrix C
+//   %arg3  = M           : i32             -- number of rows in A / C
+//   %arg4  = N           : i32             -- number of columns in B / C
+//   %arg5  = K           : i32             -- shared dimension (cols of A, rows of B)
+//   %arg6  = stride_am   : i32             -- A's row stride
+//   %arg7  = stride_ak   : i32             -- A's column stride
+//   %arg8  = stride_bk   : i32             -- B's row stride
+//   %arg9  = stride_bn   : i32             -- B's column stride
+//   %arg10 = stride_cm   : i32             -- C's row stride
+//   %arg11 = stride_cn   : i32             -- C's column stride
+//   %arg12 = num_programs_0 : i32          -- grid size axis 0 (unused)
+//   %arg13 = num_programs_1 : i32          -- grid size axis 1 (unused)
+//   %arg14 = num_programs_2 : i32          -- grid size axis 2 (unused)
+//   %arg15 = program_id_0   : i32          -- block/program ID (= pid)
+//   %arg16 = program_id_1   : i32          -- (unused)
+//   %arg17 = program_id_2   : i32          -- (unused)
+//
+// Tile sizes: BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32
+// =============================================================================
+module {
+  func.func @matmul_kernel(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: memref<*xf32>, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32, %arg11: i32, %arg12: i32, %arg13: i32, %arg14: i32, %arg15: i32, %arg16: i32, %arg17: i32) {
+
+    // --- Constants ---
+    %c64 = arith.constant 64 : index       // BLOCK_SIZE_M / BLOCK_SIZE_N as index
+    %c64_i32 = arith.constant 64 : i32     // BLOCK_SIZE_M / BLOCK_SIZE_N as i32
+    %c32_i32 = arith.constant 32 : i32     // BLOCK_SIZE_K
+    %c31_i32 = arith.constant 31 : i32     // BLOCK_SIZE_K - 1 (for ceiling division)
+    %c63_i32 = arith.constant 63 : i32     // BLOCK_SIZE_N - 1 (for ceiling division)
+    %c1_i32 = arith.constant 1 : i32       // loop step
+    %c0_i32 = arith.constant 0 : i32       // loop start
+    %cst = arith.constant 0.000000e+00 : f32  // zero for accumulator init
+
+    // --- Initialize accumulator to zero: accumulator = tl.zeros((64, 64), dtype=f32) ---
+    %0 = tensor.empty() : tensor<64x64xf32>
+    %1 = linalg.fill ins(%cst : f32) outs(%0 : tensor<64x64xf32>) -> tensor<64x64xf32>
+
+    // --- Compute tile indices from program_id (1D → 2D) ---
+    // Triton: num_pid_n = cdiv(N, BLOCK_SIZE_N)
+    %2 = arith.addi %arg4, %c63_i32 : i32     // N + 63
+    %3 = arith.divsi %2, %c64_i32 : i32       // num_pid_n = (N + 63) / 64 = cdiv(N, 64)
+
+    // Triton: pid_m = pid // num_pid_n;  pid_n = pid % num_pid_n
+    %4 = arith.divsi %arg15, %3 : i32         // pid_m = pid // num_pid_n
+    %5 = arith.remsi %arg15, %3 : i32         // pid_n = pid % num_pid_n
+
+    // Base offsets for this tile: rm_start = pid_m * 64, rn_start = pid_n * 64
+    %6 = arith.muli %4, %c64_i32 : i32        // rm_start = pid_m * BLOCK_SIZE_M
+    %7 = arith.muli %5, %c64_i32 : i32        // rn_start = pid_n * BLOCK_SIZE_N
+
+    // --- K-loop setup: num_k_iters = cdiv(K, BLOCK_SIZE_K) ---
+    %8 = arith.addi %arg5, %c31_i32 : i32     // K + 31
+    %9 = arith.divsi %8, %c32_i32 : i32       // num_k_iters = (K + 31) / 32 = cdiv(K, 32)
+
+    // =========================================================================
+    // K-LOOP: for k in range(0, cdiv(K, BLOCK_SIZE_K)):
+    //   Iteratively loads tiles of A and B, multiplies them, and accumulates
+    //   %arg18 = loop induction variable (k)
+    //   %arg19 = loop-carried accumulator tensor (64x64)
+    // =========================================================================
+    %10 = scf.for %arg18 = %c0_i32 to %9 step %c1_i32 iter_args(%arg19 = %1) -> (tensor<64x64xf32>)  : i32 {
+
+      // --- k_offset = k * BLOCK_SIZE_K ---
+      %32 = arith.muli %arg18, %c32_i32 : i32   // k_offset = k * 32
+
+      // --- Compute A tile pointer: a_ptr + rm_start * stride_am + k_offset * stride_ak ---
+      %33 = arith.index_cast %6 : i32 to index   // rm_start → index
+      %34 = arith.index_cast %arg6 : i32 to index // stride_am → index
+      %35 = arith.muli %33, %34 : index           // rm_start * stride_am
+      %36 = arith.index_cast %32 : i32 to index   // k_offset → index
+      %37 = arith.index_cast %arg7 : i32 to index // stride_ak → index
+      %38 = arith.muli %36, %37 : index           // k_offset * stride_ak
+      %39 = arith.addi %35, %38 : index           // a_offset = rm_start*stride_am + k_offset*stride_ak
+
+      // Create a 64x32 strided view into A at the computed offset
+      // This is the A tile: A[rm_start:rm_start+64, k_offset:k_offset+32]
+      %reinterpret_cast_0 = memref.reinterpret_cast %arg0 to offset: [%39], sizes: [64, 32], strides: [%34, %37] : memref<*xf32> to memref<64x32xf32, strided<[?, ?], offset: ?>>
+
+      // --- Compute B tile pointer: b_ptr + k_offset * stride_bk + rn_start * stride_bn ---
+      %40 = arith.index_cast %32 : i32 to index   // k_offset → index
+      %41 = arith.index_cast %arg8 : i32 to index // stride_bk → index
+      %42 = arith.muli %40, %41 : index           // k_offset * stride_bk
+      %43 = arith.index_cast %7 : i32 to index    // rn_start → index
+      %44 = arith.index_cast %arg9 : i32 to index // stride_bn → index
+      %45 = arith.muli %43, %44 : index           // rn_start * stride_bn
+      %46 = arith.addi %42, %45 : index           // b_offset = k_offset*stride_bk + rn_start*stride_bn
+
+      // Create a 32x64 strided view into B at the computed offset
+      // This is the B tile: B[k_offset:k_offset+32, rn_start:rn_start+64]
+      %reinterpret_cast_1 = memref.reinterpret_cast %arg1 to offset: [%46], sizes: [32, 64], strides: [%41, %44] : memref<*xf32> to memref<32x64xf32, strided<[?, ?], offset: ?>>
+
+      // --- Load A tile with bounds checking (implements mask_m = rm < M) ---
+      %alloc = memref.alloc() : memref<64x32xf32>   // local buffer for A tile
+
+      // Compute valid_rows = min(rm_start + 64, M) - rm_start  (clamped to non-negative)
+      %47 = arith.index_cast %6 : i32 to index      // rm_start
+      %48 = arith.addi %47, %c64 : index            // rm_start + BLOCK_SIZE_M
+      %49 = arith.index_cast %arg3 : i32 to index   // M
+      %50 = arith.minsi %48, %49 : index            // min(rm_start + 64, M)
+      %51 = arith.maxsi %50, %47 : index            // clamp: max(..., rm_start)
+      %52 = arith.subi %51, %47 : index             // valid_rows = number of valid rows in this A tile
+
+      // Copy only the valid rows from global A into the local buffer
+      %subview_2 = memref.subview %reinterpret_cast_0[0, 0] [%52, 32] [1, 1] : memref<64x32xf32, strided<[?, ?], offset: ?>> to memref<?x32xf32, strided<[?, ?], offset: ?>>
+      %subview_3 = memref.subview %alloc[0, 0] [%52, 32] [1, 1] : memref<64x32xf32> to memref<?x32xf32, strided<[32, 1]>>
+      memref.copy %subview_2, %subview_3 : memref<?x32xf32, strided<[?, ?], offset: ?>> to memref<?x32xf32, strided<[32, 1]>>
+
+      // Convert to tensor for linalg operations: a = tl.load(a_ptrs, mask=mask_m[:, None])
+      %53 = bufferization.to_tensor %alloc restrict writable : memref<64x32xf32> to tensor<64x32xf32>
+
+      // --- Load B tile with bounds checking (implements mask_n = rn < N) ---
+      %alloc_4 = memref.alloc() : memref<32x64xf32>  // local buffer for B tile
+
+      // Compute valid_cols = min(rn_start + 64, N) - rn_start  (clamped to non-negative)
+      %54 = arith.index_cast %7 : i32 to index       // rn_start
+      %55 = arith.addi %54, %c64 : index             // rn_start + BLOCK_SIZE_N
+      %56 = arith.index_cast %arg4 : i32 to index    // N
+      %57 = arith.minsi %55, %56 : index             // min(rn_start + 64, N)
+      %58 = arith.maxsi %57, %54 : index             // clamp: max(..., rn_start)
+      %59 = arith.subi %58, %54 : index              // valid_cols = number of valid cols in this B tile
+
+      // Copy only the valid columns from global B into the local buffer
+      %subview_5 = memref.subview %reinterpret_cast_1[0, 0] [32, %59] [1, 1] : memref<32x64xf32, strided<[?, ?], offset: ?>> to memref<32x?xf32, strided<[?, ?], offset: ?>>
+      %subview_6 = memref.subview %alloc_4[0, 0] [32, %59] [1, 1] : memref<32x64xf32> to memref<32x?xf32, strided<[64, 1]>>
+      memref.copy %subview_5, %subview_6 : memref<32x?xf32, strided<[?, ?], offset: ?>> to memref<32x?xf32, strided<[64, 1]>>
+
+      // Convert to tensor: b = tl.load(b_ptrs, mask=mask_n[None, :])
+      %60 = bufferization.to_tensor %alloc_4 restrict writable : memref<32x64xf32> to tensor<32x64xf32>
+
+      // --- Tile matmul: accumulator += tl.dot(a, b) ---
+      %61 = tensor.empty() : tensor<64x64xf32>
+      %62 = linalg.fill ins(%cst : f32) outs(%61 : tensor<64x64xf32>) -> tensor<64x64xf32>  // temp = zeros(64, 64)
+      %63 =// temp = A_tile @ B_tile
+      %64 = linalg.add ins(%arg19, %63 : tensor<64x64xf32>, tensor<64x64xf32>) outs(%arg19 : tensor<64x64xf32>) -> tensor<64x64xf32>  // accumulator += temp
+
+      // Yield updated accumulator to next iteration
+      scf.yield %64 : tensor<64x64xf32>
+    }
+
+    // =========================================================================
+    // STORE RESULT: tl.store(c_ptrs, accumulator, mask=mask_m[:, None] & mask_n[None, :])
+    // =========================================================================
+
+    // --- Compute C tile pointer: c_ptr + rm_start * stride_cm + rn_start * stride_cn ---
+    %11 = arith.index_cast %6 : i32 to index      // rm_start → index
+    %12 = arith.index_cast %arg10 : i32 to index   // stride_cm → index
+    %13 = arith.muli %11, %12 : index              // rm_start * stride_cm
+    %14 = arith.index_cast %7 : i32 to index       // rn_start → index
+    %15 = arith.index_cast %arg11 : i32 to index   // stride_cn → index
+    %16 = arith.muli %14, %15 : index              // rn_start * stride_cn
+    %17 = arith.addi %13, %16 : index              // c_offset = rm_start*stride_cm + rn_start*stride_cn
+
+    // Create a 64x64 strided view into C at the computed offset
+    %reinterpret_cast = memref.reinterpret_cast %arg2 to offset: [%17], sizes: [64, 64], strides: [%12, %15] : memref<*xf32> to memref<64x64xf32, strided<[?, ?], offset: ?>>
+
+    // --- Compute output bounds (mask_m & mask_n for store) ---
+    // valid_rows = clamp(min(rm_start + 64, M) - rm_start, 0, 64)
+    %18 = arith.index_cast %6 : i32 to index       // rm_start
+    %19 = arith.addi %18, %c64 : index             // rm_start + 64
+    %20 = arith.index_cast %arg3 : i32 to index    // M
+    %21 = arith.minsi %19, %20 : index             // min(rm_start + 64, M)
+    %22 = arith.maxsi %21, %18 : index             // clamp lower bound
+    %23 = arith.subi %22, %18 : index              // valid_rows
+
+    // valid_cols = clamp(min(rn_start + 64, N) - rn_start, 0, 64)
+    %24 = arith.index_cast %7 : i32 to index       // rn_start
+    %25 = arith.addi %24, %c64 : index             // rn_start + 64
+    %26 = arith.index_cast %arg4 : i32 to index    // N
+    %27 = arith.minsi %25, %26 : index             // min(rn_start + 64, N)
+    %28 = arith.maxsi %27, %24 : index             // clamp lower bound
+    %29 = arith.subi %28, %24 : index              // valid_cols
+
+    // Final clamping to BLOCK_SIZE (64)
+    %30 = arith.minsi %23, %c64 : index            // output_rows = min(valid_rows, 64)
+    %31 = arith.minsi %29, %c64 : index            // output_cols = min(valid_cols, 64)
+
+    // Extract only the valid portion of the accumulator and store to C
+    %extracted_slice = tensor.extract_slice %10[0, 0] [%30, %31] [1, 1] : tensor<64x64xf32> to tensor<?x?xf32>
+    %subview = memref.subview %reinterpret_cast[0, 0] [%30, %31] [1, 1] : memref<64x64xf32, strided<[?, ?], offset: ?>> to memref<?x?xf32, strided<[?, ?], offset: ?>>
+    bufferization.materialize_in_destination %extracted_slice in writable %subview : (tensor<?x?xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>>) -> ()
+    return
+  }
+}
+

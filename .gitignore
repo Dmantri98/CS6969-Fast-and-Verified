@@ -1,0 +1,35 @@
+# --- Third-party source trees (cloned locally, not part of this repo). ---
+# See final_project/linalg-to-nki/build_and_test.sh for clone commands / pins.
+final_project/llvm-project/
+final_project/triton/
+final_project/triton_shared/
+final_project/nki-samples/
+
+# --- Build artifacts. ---
+build/
+**/build/
+cmake-build-*/
+
+# --- Python. ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Editor / IDE. ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS noise. ---
+.DS_Store
+Thumbs.db
+
+# --- Local scratch / generated outputs. ---
+# (Commit generated_relu/ & generated/ if you want them tracked; otherwise
+#  uncomment to treat them as regeneratable.)
+# final_project/linalg-to-nki/generated_relu/
+# final_project/linalg-to-nki/generated/
